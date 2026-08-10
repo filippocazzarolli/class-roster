@@ -341,5 +341,5 @@ passo dichiarato va poi eseguito: questa lista è ciò contro cui verificarlo.
 | **Payload di ogni evento e nome sul bus** | `architecture.md` §4.3 |
 | Elenco delle eccezioni di dominio e loro stato HTTP | `architecture.md` §4.4 |
 | Forma dei due read model e rotte che li servono | `architecture.md` §4.5, §4.6 |
-| Schema di persistenza, lock ottimistico, outbox | `architecture.md` §4.7, §4.8 |
+| Forma della persistenza, lock ottimistico, propagazione degli eventi | `architecture.md` §4.7, §4.8 |
 | Guardiani automatici e strategia di test | `architecture.md` §4.9, §4.10 |

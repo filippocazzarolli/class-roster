@@ -51,8 +51,8 @@ proprio e non condivide modelli con gli altri.
 | **Iscrizioni** | `iscrizioni/` | Chi partecipa a cosa, e con quali posti | Aggregato `Sessione` |
 | **Notifiche** | `notifiche/` | Comporre e consegnare messaggi | Nessun aggregato |
 
-Tutti e tre vivono in **un unico processo NestJS e un unico database**. Il confine non è
-di rete: è di **codice e di dati**, imposto dai due divieti (§2.9) e dai guardiani ESLint
+Tutti e tre vivono in **un unico processo NestJS, con un unico archivio** (`architecture.md`
+§4.7). Il confine non è di rete: è di **codice e di dati**, imposto dai due divieti (§2.9) e dai guardiani ESLint
 descritti in `architecture.md` §4.9. Un confine che regge solo per buona volontà non è un
 confine.
 
@@ -105,7 +105,7 @@ prosa.
 
 ```mermaid
 flowchart TB
-    subgraph APP["Processo NestJS — un database"]
+    subgraph APP["Processo NestJS — un archivio in memoria"]
         direction TB
 
         subgraph CATB["🟡 catalogo — Supporting"]
@@ -122,7 +122,7 @@ flowchart TB
             NOT["Composizione messaggio<br/>+ adapter di log"]
         end
 
-        BUS(["event bus + outbox — shared/"])
+        BUS(["event bus in-process — shared/"])
 
         CAT -->|"pubblica<br/>CorsoPubblicato, CorsoRitirato,<br/>DettagliCorsoModificati"| BUS
         ISC -->|"pubblica<br/>SessioneAnnullata,<br/>DipendentePromosso"| BUS
@@ -271,15 +271,17 @@ serve, arriva per evento e viene replicato dall'ACL. Non esiste un'eccezione «s
 perché il tipo condiviso è il primo passo per ricostruire il modello unico che i contesti
 esistono per evitare.
 
-**Divieto 2 — nessuna foreign key fra tabelle di moduli diversi.** Il `corsoId` dentro
-`iscrizioni` è una **copia** di un identificativo, non un riferimento a una riga. Il database
-non deve poter garantire un'integrità che il modello ha deliberatamente rinunciato ad avere:
-se la garantisse, la replica diventerebbe di fatto un riferimento e i due moduli sarebbero
-inseparabili.
+**Divieto 2 — nessun legame dichiarato fra i dati di moduli diversi.** Il `corsoId` dentro
+`iscrizioni` è una **copia** di un identificativo, non un riferimento a un dato altrui. La
+persistenza non deve poter garantire un'integrità che il modello ha deliberatamente rinunciato ad
+avere: se la garantisse, la replica diventerebbe di fatto un riferimento e i due moduli sarebbero
+inseparabili. Con un database sarebbe una foreign key da non dichiarare; con l'archivio in memoria
+di `architecture.md` §4.7 è una funzione di lettura che non deve attraversare i due archivi —
+stessa regola, presidio più debole, perché qui nulla la impone se non ESLint.
 
 Chiarimento necessario, perché il divieto 2 è facile da leggere in modo eccessivo: **dentro** un
-modulo le foreign key sono ammesse e usate — `iscrizioni_iscrizioni.sessione_id` punta a
-`iscrizioni_sessioni.id`, ed è corretto, perché sono parti dello stesso aggregato e dello stesso
+modulo i legami sono ammessi e usati — le iscrizioni appartengono alla loro sessione e vivono
+dentro di essa, ed è corretto, perché sono parti dello stesso aggregato e dello stesso
 proprietario.
 
 Entrambi i divieti sono imposti da ESLint e non dalla disciplina personale. La configurazione

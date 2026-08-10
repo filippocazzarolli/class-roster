@@ -205,7 +205,7 @@ La tabella che `event-storming.md` §1.8 ha lasciato in bianco.
 | **INV-11** | Il ritiro annulla le sessioni future, non le passate | ⚠️ **Policy P2**, non un aggregato | **Eventuale** |
 | **INV-12** | Una sessione annullata non torna attiva | `Sessione.annulla` | Immediata |
 
-Dieci invarianti su dodici sono difese da un aggregato, in memoria, senza database. È il numero
+Dieci invarianti su dodici sono difese da un aggregato, senza toccare l'infrastruttura. È il numero
 che rende sensata la piramide di test rovesciata di `architecture.md` §4.10. Le due eccezioni —
 INV-1 e INV-11 — non sono difetti: sono **invarianti che attraversano più aggregati**, e nessun
 aggregato può custodire ciò che non vede. Vanno però dichiarate, perché il costo di
@@ -346,24 +346,32 @@ altri.
    è **illusorio**: fra la verifica e il salvataggio c'è una finestra, e due richieste
    simultanee con lo stesso titolo la attraversano entrambe. Dà l'apparenza della sicurezza senza
    la sicurezza.
-3. *Un vincolo di unicità nel database.* Il solo che regga sotto concorrenza reale.
+3. *Un vincolo di unicità garantito dalla persistenza.* Il solo che regga sotto concorrenza
+   reale, perché verifica e scrittura avvengono in un'unica operazione indivisibile.
 
-**Decisione.** Vincolo `UNIQUE` sulla colonna `titolo_normalizzato` (minuscolo, spazi
-compattati). Il repository intercetta la violazione del vincolo e la **rilancia come eccezione
-di dominio** `TitoloCorsoGiaUsato`. In aggiunta, un controllo preventivo nell'application
-service produce lo stesso errore nel caso normale — non per correttezza, ma per non far
-dipendere il messaggio d'errore comune dalla gestione di un errore del driver.
+**Decisione.** Unicità su `titoloNormalizzato` (minuscolo, spazi compattati), garantita dalla
+persistenza e non dal dominio. Il repository dei corsi la verifica e **solleva l'eccezione di
+dominio** `TitoloCorsoGiaUsato`. In aggiunta, un controllo preventivo nell'application service
+produce lo stesso errore nel caso normale — non per correttezza, ma per non far dipendere il
+messaggio d'errore comune dalla gestione di un errore infrastrutturale.
+
+> **Come è implementata dipende dall'archivio, e la garanzia non è la stessa.** Con un database
+> sarebbe un vincolo `UNIQUE` sulla colonna. Con l'archivio in memoria scelto in
+> `architecture.md` §4.1 è un indice `titoloNormalizzato → CorsoId` controllato dentro `salva`:
+> indivisibile perché il salvataggio è sincrono e il processo è uno, non perché lo garantisca un
+> motore. L'argomento del punto 2 — la finestra fra verifica e scrittura — resta quindi valido
+> per il domain service e resta chiuso qui, ma per un'ipotesi di deploy invece che per costruzione.
 
 **Perché è accettabile che il custode sia l'infrastruttura.** Il criterio arbitro
 dell'esercizio è se una decisione rende più visibile il modello o lo nasconde. Qui la
 traduzione avviene in **un punto solo e dichiarato** — il repository dei corsi — e ciò che
 risale allo strato applicativo è un'eccezione di dominio con un nome del linguaggio ubiquo. Il
 dominio non sa cosa sia un indice univoco; sa cosa sia un titolo già usato. Ciò che sarebbe
-inaccettabile è il contrario: lasciare che un `SQLITE_CONSTRAINT_UNIQUE` arrivi fino al
-controller.
+inaccettabile è il contrario: lasciare che l'errore grezzo dell'archivio — un
+`SQLITE_CONSTRAINT_UNIQUE`, o una collisione di chiave — arrivi fino al controller.
 
 **Costo accettato.** È l'unica invariante che un test di dominio puro non può verificare.
-Richiede un test di integrazione, ed è elencato come tale in `architecture.md` §4.10.
+Richiede un test sull'infrastruttura, ed è elencato come tale in `architecture.md` §4.10.
 
 ---
 
@@ -499,7 +507,7 @@ Tutti gli hotspot sono chiusi. Restano i debiti tecnici verso il quarto document
 | Payload di ogni evento, nome sul bus, versionamento | `architecture.md` §4.3 |
 | Elenco completo delle eccezioni di dominio con stato HTTP | `architecture.md` §4.4 |
 | Rotte, DTO e traduzione italiano ↔ inglese | `architecture.md` §4.6 |
-| Tabelle, colonne, indici, mapper aggregato ↔ righe | `architecture.md` §4.7 |
-| Lock ottimistico, retry, outbox, idempotenza | `architecture.md` §4.7, §4.8 |
+| Forma degli snapshot, indici, mapper aggregato ↔ snapshot | `architecture.md` §4.7 |
+| Lock ottimistico, retry, idempotenza | `architecture.md` §4.7, §4.8 |
 | Configurazione dei guardiani automatici | `architecture.md` §4.9 |
 | Elenco dei test di dominio, uno per invariante | `architecture.md` §4.10 |

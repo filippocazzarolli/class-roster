@@ -80,7 +80,7 @@ leggendo il racconto del committente, le altre otto sono emerse facendo event st
 | 4 | La promozione è transazionale o reattiva? | **Transazionale** | `aggregation.md` §3.6 |
 | 5 | Esiste «cambia sessione»? | **No**: annulla e iscriviti, con sequenza guidata | `aggregation.md` §3.6 |
 | 6 | Il docente è entità o attributo? | **Value object** | `domain.md` §2.6 |
-| 7 | Chi difende l'unicità del titolo? | Vincolo `UNIQUE`, tradotto in eccezione di dominio | `aggregation.md` §3.7 |
+| 7 | Chi difende l'unicità del titolo? | **La persistenza**, tradotta in eccezione di dominio | `aggregation.md` §3.7, `architecture.md` §4.7 |
 | 8 | Come sa, chi programma, se il corso è pubblicato? | **Replica ACL**; l'inconsistenza si ripara da sola | `domain.md` §2.7 |
 | 9 | Che ne è della coda a sessione iniziata? | Nessuna transizione: decadenza derivata nel read model | `aggregation.md` §3.8 |
 | 10 | Da dove viene l'indirizzo di chi va avvisato? | **Viaggia dentro l'evento** | `domain.md` §2.8 |
@@ -108,8 +108,9 @@ gusto. È il singolo risultato più utile dell'event storming — vedi `event-st
 | Il payload di un evento e il suo nome sul bus | `architecture.md` §4.3 |
 | Quale stato HTTP produce un rifiuto | `architecture.md` §4.4 |
 | Le rotte HTTP | `architecture.md` §4.6 |
-| Tabelle, colonne, lock ottimistico | `architecture.md` §4.7 |
-| Outbox e ordine degli handler | `architecture.md` §4.8 |
+| Archivio in memoria, snapshot, lock ottimistico | `architecture.md` §4.7 |
+| Idempotenza e ordine degli handler | `architecture.md` §4.8 |
+| Perché lo stato sta in memoria e non in un database | `architecture.md` §4.1 |
 | Le regole ESLint e i test di contratto | `architecture.md` §4.9 |
 | L'elenco dei test da scrivere, uno per invariante | `architecture.md` §4.10 |
 | Il dominio raccontato, e le regole in lingua d'affari | `event-storming.md` §1.0 |
@@ -175,7 +176,7 @@ in `architecture.md` §4.9.
 | | |
 |---|---|
 | ✅ | I quattro documenti esistono, e tutti e 14 gli hotspot sono chiusi con una decisione motivata |
-| ⬜ | Backend: un progetto NestJS, moduli per contesto, event bus con outbox, read model, notifiche via log |
+| ⬜ | Backend: un progetto NestJS, moduli per contesto, event bus in-process, read model, notifiche via log |
 | ⬜ | `pnpm lint` a zero warning, guardiani architetturali inclusi |
 | ⬜ | Cancellando `infrastructure/`, il dominio compila ancora |
 | ⬜ | Test di dominio sotto il secondo, leggibili come le regole di `event-storming.md` §1.0 |

@@ -17,15 +17,43 @@ non nei precedenti, è un errore di stratificazione, non una scoperta.
 | Backend | NestJS (TypeScript) in `apps/api` — un solo progetto, moduli per contesto |
 | Frontend | React, **due app**: `apps/web-dipendente`, `apps/web-formazione` |
 | Identità | Nessuna autenticazione: header `X-Utente`, letto in un solo punto |
-| Persistenza | SQL **state-based** con Drizzle ORM — SQLite in sviluppo, schema portabile su Postgres |
-| Eventi fra moduli | Event bus in-process, handler asincroni, tabella **outbox** |
-| Deploy | Monolite modulare, un processo, un database |
+| Persistenza | **State-based in memoria** — repository dietro porta, nessun database |
+| Eventi fra moduli | Event bus in-process, handler asincroni e idempotenti |
+| Deploy | Monolite modulare, un processo, stato che vive quanto il processo |
 
 **Perché state-based e non Event Sourcing.** Sarebbe tematicamente affine: abbiamo fatto un
 event storming, gli eventi ci sono già. Ma introdurrebbe un secondo corpo di concetti —
 stream, proiezioni, snapshot, versionamento, replay — che diventerebbe *il* protagonista,
 oscurando quello vero: aggregati, invarianti e confini. Gli eventi restano centrali come modo
 in cui i contesti si parlano; semplicemente non sono anche il meccanismo di persistenza.
+
+### Lo stato vive in memoria, non in un database
+
+*Non è un hotspot del dominio — il committente non ha mai parlato di persistenza, e nessuna
+invariante cambia. È una decisione di questo documento, con effetto su §4.5, §4.7, §4.8 e §4.10.*
+
+Le porte esistevano già — `RepositorySessioni`, `RepositoryCorsi`, `CorsiPubblicati`
+(`aggregation.md` §3.10) — e §4.10 dichiarava che verificare le invarianti «senza database,
+senza HTTP e senza NestJS» è l'intero punto dell'esercizio. Il database serviva l'infrastruttura,
+non il ragionamento: ne resta **una sola implementazione della porta**, in memoria.
+
+| | In memoria (scelta) | SQL con Drizzle (scartata) |
+|---|---|---|
+| Invarianti di dominio | Identiche: INV-3…INV-12 non cambiano di una riga | Identiche |
+| INV-1, titolo unico | Indice sul titolo normalizzato nel repository (§4.7) | Vincolo `UNIQUE`, HS-7 |
+| Atomicità stato + evento | Non esiste transazione da cui difendersi: cade l'outbox (§4.8) | Outbox nella stessa transazione |
+| Letture | Funzioni su collezioni (§4.5) | Query SQL dedicate |
+| Costo di avvio | Nessuno: `pnpm dev` e basta | Migrazioni, schema, driver |
+
+**Il prezzo, dichiarato.** Con una sola implementazione l'astrazione della porta non è più
+*dimostrata*: che il dominio sia davvero indipendente dalla persistenza resta un'affermazione
+finché nessuno scrive la seconda implementazione. È il debito che questa scelta apre, e va
+tenuto scritto invece che dimenticato.
+
+**Cosa lo farebbe cambiare idea.** Il primo requisito che chieda allo stato di sopravvivere al
+riavvio del processo, o a un secondo processo di leggere gli stessi dati. Nessuno dei due è
+oggi nei requisiti, ed entrambi si pagano con un modulo nuovo in `infrastructure/persistence/`
+— non con una modifica al dominio. È esattamente ciò che le porte dovevano rendere possibile.
 
 Cartelle per **contesto prima che per strato**. Aprire `iscrizioni/` deve mostrare il dominio,
 non la tecnologia.
@@ -49,17 +77,16 @@ apps/api/src/
 │   │   ├── policy/annulla-sessioni-corso-ritirato.policy.ts       P2
 │   │   └── con-riprova.ts                 retry sul conflitto di versione
 │   ├── infrastructure/
-│   │   ├── persistence/                   schema Drizzle, mapper, repository, in-memory
+│   │   ├── persistence/                   snapshot, mapper, repository in memoria
 │   │   ├── acl/                           traduzione eventi catalogo → replica locale
 │   │   └── http/                          controller, DTO
-│   └── read-model/                        query di lettura
+│   └── read-model/                        letture dedicate
 ├── catalogo/                         🟡 Supporting — stessa struttura
 ├── notifiche/                        ⚪ Generic — composizione messaggio + adapter di log
 └── shared/
     ├── domain/                       DataLocale, OraLocale, IstanteLocale, Orologio, GeneratoreDiId
-    ├── event-bus/
-    ├── outbox/
-    ├── persistence/                  tipi colonna, unità di lavoro
+    ├── event-bus/                    bus in-process, registro degli eventi già gestiti
+    ├── persistence/                  archivio in memoria, snapshot, controllo di versione
     └── http/                         filtro eccezioni → stato HTTP, UtenteCorrente da X-Utente
 ```
 
@@ -244,31 +271,41 @@ contratto (§4.9) che fallisce se una classe di errore non ha uno stato dichiara
 
 *Debito di `event-storming.md` §1.6.* Due letture, come previsto.
 
-**Sono query SQL dedicate sulle tabelle di stato del modulo, non proiezioni materializzate.**
+**Sono letture dedicate sugli snapshot del modulo, non proiezioni materializzate.**
 La persistenza è state-based: una proiezione separata aggiungerebbe una consistenza eventuale
 *dentro l'interfaccia utente* — un posto che risulta libero perché la proiezione è indietro —
-in cambio di nulla, dato che le query sono su decine di righe. Ciò che invece resta fermo è che
-le query **non passano dai repository degli aggregati** e non restituiscono oggetti di dominio:
+in cambio di nulla, dato che si scorrono decine di elementi. Ciò che invece resta fermo è che
+le letture **non passano dai repository degli aggregati** e non restituiscono oggetti di dominio:
 è la difesa contro il repository onnisciente.
+
+> **Con l'archivio in memoria questa riga è più fragile, non meno.** Con SQL la separazione era
+> imposta dal mezzo: per leggere servivano query, e un aggregato non era a portata di mano. Qui
+> tutto è già in RAM, e `repositorySessioni.perId(...)` restituisce un oggetto di dominio pronto
+> da interrogare: nulla *impedisce* al read model di usarlo. La regola diventa quindi una
+> disciplina esplicita — il read model legge gli **snapshot** dall'archivio (§4.7), mai gli
+> aggregati ricostruiti — ed è affidata a una porta separata, `LettureSessioni`, che restituisce
+> solo DTO. Se un giorno un read model importa `Sessione`, la separazione è già persa.
 
 ### R1 — Sessioni aperte, con posti residui
 
-```sql
-SELECT s.id, s.corso_id, s.corso_titolo, s.data, s.ora_inizio,
-       s.luogo_tipo, s.luogo_nome, s.docente, s.capienza,
-       COUNT(CASE WHEN i.stato = 'ISCRITTO'  THEN 1 END) AS iscritti,
-       COUNT(CASE WHEN i.stato = 'IN_ATTESA' THEN 1 END) AS in_attesa
-  FROM iscrizioni_sessioni s
-  LEFT JOIN iscrizioni_iscrizioni i ON i.sessione_id = s.id
- WHERE s.stato = 'PROGRAMMATA'
-   AND (s.data > :oggi OR (s.data = :oggi AND s.ora_inizio > :adesso))
- GROUP BY s.id
- ORDER BY s.data, s.ora_inizio;
+```ts
+// legge gli snapshot, non gli aggregati
+listaSessioniAperte(adesso: IstanteLocale): SessioneApertaDTO[] {
+  return archivio.sessioni.valori()
+    .filter(s => s.stato === 'PROGRAMMATA' && adesso.precede(inizioDi(s)))
+    .map(s => ({
+      ...datiDiTesta(s),
+      iscritti:  s.iscrizioni.filter(i => i.stato === 'ISCRITTO').length,
+      inAttesa:  s.iscrizioni.filter(i => i.stato === 'IN_ATTESA').length,
+    }))
+    .sort(perDataEOra);
+}
 ```
 
-`posti_residui = capienza − iscritti`, calcolato nel DTO. `:oggi` e `:adesso` arrivano
-dall'`Orologio`, anche qui: la lettura non ha invarianti da difendere, ma un `date('now')`
-in SQL reintrodurrebbe sia il fuso orario sia il non determinismo nei test.
+`postiResidui = capienza − iscritti`, calcolato nel DTO. `adesso` arriva dall'`Orologio` e non da
+`new Date()`, anche qui: la lettura non ha invarianti da difendere, ma un orologio di sistema
+reintrodurrebbe sia il fuso orario sia il non determinismo nei test. L'ordinamento per data e ora
+resta un confronto lessicografico fra stringhe, come in §4.1.
 
 > Questo numero **si mostra e non si usa per decidere**. Chi decide se il posto c'è è la
 > `Sessione`, con l'aggregato caricato per intero e il lock ottimistico. Contare i posti qui per
@@ -276,17 +313,23 @@ in SQL reintrodurrebbe sia il fuso orario sia il non determinismo nei test.
 
 ### R2 — Le mie iscrizioni
 
-```sql
-SELECT s.id AS sessione_id, s.corso_titolo, s.data, s.ora_inizio,
-       s.luogo_tipo, s.luogo_nome, s.docente, s.stato AS stato_sessione,
-       s.motivo_annullamento, i.stato AS stato_iscrizione, i.ordine
-  FROM iscrizioni_iscrizioni i
-  JOIN iscrizioni_sessioni s ON s.id = i.sessione_id
- WHERE i.dipendente_id = :dipendenteId
- ORDER BY s.data DESC, s.ora_inizio DESC;
+```ts
+listaMieIscrizioni(dipendenteId: string, adesso: IstanteLocale): MiaIscrizioneDTO[] {
+  return archivio.sessioni.valori()
+    .flatMap(s => {
+      const mia = s.iscrizioni.find(i => i.dipendenteId === dipendenteId);
+      return mia ? [componiDTO(s, mia, adesso)] : [];
+    })
+    .sort(perDataEOraDiscendente);
+}
 ```
 
-Il DTO deriva due informazioni che non stanno in nessuna colonna:
+Con SQL era una join guidata da un indice su `dipendente_id`; qui è una scansione. Su decine di
+sessioni è irrilevante, e vale la pena scriverlo invece di introdurre un indice inverso che
+andrebbe mantenuto allineato a ogni salvataggio — cioè una proiezione materializzata, quella che
+il capoverso qui sopra ha appena escluso.
+
+Il DTO deriva due informazioni che non stanno in nessun campo dello snapshot:
 
 - `annullabileFinoA = inizio − 24h`, e `annullabile = adesso < annullabileFinoA` (INV-10);
 - `decaduta = stato_iscrizione = 'IN_ATTESA' AND inizio ≤ adesso` — la traduzione di HS-9,
@@ -297,10 +340,13 @@ dall'aggregato. Vale la stessa avvertenza dei posti residui.
 
 ### R3 — Catalogo corsi (responsabile)
 
-Elenco piatto di `catalogo_corsi` con stato e conteggio delle sessioni programmate — che è una
-lettura del modulo `iscrizioni`, quindi **due query separate composte nel frontend**, non una
-join fra moduli. Il divieto 2 vale anche in lettura: una join fra `catalogo_corsi` e
-`iscrizioni_sessioni` sarebbe la foreign key che non abbiamo dichiarato, scritta in SQL.
+Elenco piatto dei corsi con stato, più il conteggio delle sessioni programmate — che è un dato
+del modulo `iscrizioni`, quindi **due letture separate composte nel frontend**, non una lettura
+sola che attraversa i due archivi. Il divieto 2 vale anche in lettura, e in memoria richiede più
+disciplina di prima: i due archivi sono due mappe nello stesso processo, e comporle in una
+funzione costa una riga. Quella riga sarebbe la foreign key fra moduli che `domain.md` §2.9 ha
+rifiutato — scritta in TypeScript invece che in SQL, ma con lo stesso effetto: due contesti che
+non possono più cambiare separatamente.
 
 ---
 
@@ -359,9 +405,13 @@ bisogno: header `X-Utente: email`, tradotto in `UtenteCorrente { id, email }` da
 403.
 
 `id` è derivato dall'email in modo **deterministico** — UUID v5 su un namespace fisso — così
-resta stabile fra i riavvii senza alcuna tabella utenti. È anche il motivo per cui non serve un
-contesto `identity`: senza ruoli da verificare e senza anagrafica da consultare, non resta un
-modello, resta una riga di parsing.
+resta stabile fra i riavvii senza alcuna anagrafica memorizzata. È anche il motivo per cui non
+serve un contesto `identity`: senza ruoli da verificare e senza anagrafica da consultare, non
+resta un modello, resta una riga di parsing.
+
+Con lo stato in memoria (§4.7) questa proprietà diventa l'unica cosa che sopravvive al riavvio:
+i dipendenti restano gli stessi, le loro iscrizioni no. È una conseguenza da conoscere prima di
+provare l'applicazione, non un difetto da correggere.
 
 Il confine da tenere è comunque quello: `X-Utente` è letto **in un solo punto**. Il giorno che
 diventasse un SSO vero, a cambiare sarebbe quel file e nient'altro — nessun controller, nessun
@@ -371,67 +421,111 @@ use case e ovviamente nessun aggregato sa da dove arriva l'identità.
 
 ## 4.7 Persistenza
 
-Drizzle ORM, SQLite in sviluppo, schema portabile su Postgres. Tabelle **prefissate per
-modulo**: il prefisso dichiara il proprietario.
+Un **archivio in memoria**: mappe da identificativo a snapshot, una per collezione, tutte dietro
+`shared/persistence`. I nomi restano **prefissati per modulo** — il prefisso dichiara il
+proprietario, e continuerà a dichiararlo il giorno in cui diventeranno tabelle.
 
-```
-catalogo_corsi              (id, titolo, titolo_normalizzato UNIQUE, descrizione,
-                             durata_ore, argomento, stato, versione)
+```ts
+catalogo_corsi              Map<CorsoId, CorsoSnapshot>
+                            { id, titolo, titoloNormalizzato, descrizione,
+                              durataOre, argomento, stato, versione }
+                            + indice titoloNormalizzato → CorsoId        ← unicità, INV-1
 
-iscrizioni_sessioni         (id, corso_id, corso_titolo, data, ora_inizio,
-                             luogo_tipo, luogo_nome, docente, capienza,
-                             stato, motivo_annullamento, versione)
+iscrizioni_sessioni         Map<SessioneId, SessioneSnapshot>
+                            { id, corsoId, corsoTitolo, data, oraInizio,
+                              luogoTipo, luogoNome, docente, capienza,
+                              stato, motivoAnnullamento, versione,
+                              iscrizioni: [{ dipendenteId, email, stato, ordine }] }
 
-iscrizioni_iscrizioni       (sessione_id, dipendente_id, email, stato, ordine,
-                             PRIMARY KEY (sessione_id, dipendente_id),
-                             FOREIGN KEY (sessione_id) → iscrizioni_sessioni.id)
+iscrizioni_corsi_pubblicati Map<CorsoId, { titolo, pubblicato, aggiornatoIl }>   ← replica ACL
 
-iscrizioni_corsi_pubblicati (corso_id PK, titolo, pubblicato, aggiornato_il)   ← replica ACL
+shared_eventi_gestiti       Set<`${handler}|${eventId}`>
 
-shared_outbox               (id PK, nome_evento, payload, occorso_il,
-                             pubblicato_il NULL, tentativi)
-
-shared_eventi_gestiti       (handler, evento_id, PRIMARY KEY (handler, evento_id))
-
-notifiche_messaggi          (id PK, destinatario, oggetto, corpo, inviato_il)
+notifiche_messaggi          Array<{ id, destinatario, oggetto, corpo, inviatoIl }>
 ```
 
-**L'unica foreign key del sistema è interna a `iscrizioni`**, fra la sessione e le sue
-iscrizioni — stesso aggregato, stesso proprietario, ed è corretta. Fra `iscrizioni_sessioni.corso_id`
-e `catalogo_corsi.id` **non c'è**, e non è una dimenticanza: è la decisione di `domain.md` §2.9.
-Quel valore è una copia, e il database non deve poter garantire un'integrità a cui il modello ha
-rinunciato.
+**Le iscrizioni sono annidate dentro lo snapshot della sessione**, non in una mappa a sé. Con SQL
+erano una tabella separata legata da una foreign key, e quella era l'unica foreign key del
+sistema: stesso aggregato, stesso proprietario. Qui il confine dell'aggregato si esprime meglio
+ancora — le iscrizioni non hanno una collezione propria da cui qualcuno possa pescarle
+scavalcando la `Sessione`, che è esattamente ciò che il confine significa.
 
-### Tipi colonna, isolati
+Fra `iscrizioni_sessioni.corsoId` e `catalogo_corsi` non c'è **nessun legame dichiarato**, e non è
+una dimenticanza: è la decisione di `domain.md` §2.9. Quel valore è una copia. In memoria
+l'assenza di integrità referenziale è la condizione naturale — ma per la stessa ragione nessuno
+la difende più al posto nostro, e l'unico presidio resta il guardiano ESLint di §4.9.
 
-Date e ore sono **colonne testuali** `YYYY-MM-DD` e `HH:MM:SS`, mai timestamp numerici: un
-intero in millisecondi reintrodurrebbe il fuso orario che il modello ha escluso, e i due formati
-sono lessicograficamente ordinabili — la clausola `ORDER BY s.data, s.ora_inizio` di R1 funziona
-per costruzione. Tutti i tipi colonna vivono in `shared/persistence/tipi.ts`, così il porting a
-Postgres è un'operazione locale a un file.
+### I formati, isolati
 
-### Mapper espliciti
+Date e ore restano **stringhe** `YYYY-MM-DD` e `HH:MM:SS`, mai numeri: un intero in millisecondi
+reintrodurrebbe il fuso orario che il modello ha escluso, e i due formati sono lessicograficamente
+ordinabili — l'ordinamento di R1 funziona per costruzione. I tipi degli snapshot vivono in
+`shared/persistence/tipi.ts`, così il giorno in cui diventano colonne il lavoro è locale a un file.
+
+### Mapper espliciti, e la ragione che in memoria diventa più urgente
 
 L'aggregato si carica e si salva **per intero**, con un mapper scritto a mano fra dominio e
-righe. `Sessione` è sempre letta con tutte le sue iscrizioni: senza di esse non può difendere
+snapshot. `Sessione` è sempre letta con tutte le sue iscrizioni: senza di esse non può difendere
 INV-4, e un caricamento parziale sarebbe un aggregato che decide alla cieca.
 
-È lavoro in più ed è deliberato. Appena si mette `@Entity` su un aggregato, è l'ORM a dettare la
-forma del modello: `Iscrizione.ordine` diventa un `@Column`, il costruttore privato diventa
-pubblico perché l'ORM ne ha bisogno, e la classe smette di poter garantire i propri invarianti
-alla costruzione.
+Con un database il mapper era una difesa dall'ORM. Qui difende da qualcosa di più insidioso: se
+il repository conservasse il **riferimento** all'aggregato invece di uno snapshot, chi muta una
+`Sessione` senza salvarla vedrebbe comunque la mutazione al caricamento successivo. Il sistema
+sembrerebbe funzionare, i test passerebbero — per il motivo sbagliato — e `salva()` diventerebbe
+una chiamata decorativa. Peggio: un comando rifiutato a metà lascerebbe le sue modifiche parziali
+nell'archivio, che è la negazione dell'atomicità dell'aggregato.
+
+Quindi la regola è tassativa: **`perId` ricostruisce dall'snapshot, `salva` produce un nuovo
+snapshot**, e nessun oggetto di dominio finisce mai dentro una mappa dell'archivio. Il test di
+round-trip di §4.10 esiste per questo.
+
+Resta valido anche l'argomento originale: appena si mette `@Entity` su un aggregato è l'ORM a
+dettare la forma del modello — `Iscrizione.ordine` diventa un `@Column`, il costruttore privato
+diventa pubblico perché l'ORM ne ha bisogno, e la classe smette di poter garantire i propri
+invarianti alla costruzione.
+
+### L'unicità del titolo, senza `UNIQUE`
+
+HS-7 (`aggregation.md` §3.7) aveva assegnato INV-1 al vincolo `UNIQUE` del database, unica
+invariante non difesa da un aggregato. Senza database la difesa diventa un **indice
+`titoloNormalizzato → CorsoId` nell'archivio**, controllato dentro `salva`: se l'indice contiene
+già quel titolo per un altro identificativo, il repository solleva `TitoloCorsoGiaUsato`.
+
+La sostanza di HS-7 non cambia: il controllo resta **in persistenza e non nel dominio**, e la
+traduzione in eccezione di dominio avviene in **un punto solo e dichiarato**, il repository dei
+corsi. Ciò che cambia è la forza della garanzia, e va detto in chiaro: `UNIQUE` reggeva sotto
+concorrenza reale perché il controllo e la scrittura erano un'operazione sola. Qui reggono perché
+il processo è uno e il salvataggio è sincrono — nessun `await` fra la verifica dell'indice e
+l'inserimento. È una garanzia sufficiente ma **condizionata a un'ipotesi di deploy**, non più a
+una proprietà del motore: il giorno dei due processi, INV-1 è la prima cosa a cadere.
 
 ### Lock ottimistico e riprova
 
-Ogni aggregato ha una colonna `versione`. Il salvataggio è:
+Ogni snapshot porta un campo `versione`, e il salvataggio è un **check-and-set**:
 
-```sql
-UPDATE iscrizioni_sessioni SET …, versione = :versioneLetta + 1
- WHERE id = :id AND versione = :versioneLetta;
+```ts
+salva(sessione: Sessione): void {
+  const attuale = this.mappa.get(sessione.id);
+  if (attuale && attuale.versione !== sessione.versioneLetta) {
+    throw new ConflittoDiVersione(sessione.id);
+  }
+  this.mappa.set(sessione.id, { ...snapshotDi(sessione), versione: sessione.versioneLetta + 1 });
+}
 ```
 
-Zero righe aggiornate significa che qualcun altro ha scritto: il repository solleva
-`ConflittoDiVersione`. Le iscrizioni figlie si riscrivono nella stessa transazione.
+**Perché tenerlo, se un processo solo non ha contesa.** È la domanda giusta, e la risposta non è
+«per realismo». La riprova di `con-riprova.ts` è ciò che rende dicibile una frase di
+`aggregation.md` §3.6: non esiste un ramo di codice per «ho perso la gara», esiste la regola di
+dominio riapplicata a uno stato aggiornato. Toglierlo cancellerebbe l'argomento, non solo il
+codice — e lo cancellerebbe proprio nel punto in cui l'esercizio ha la sua unica vera contesa,
+l'ultimo posto disponibile.
+
+Va però detto senza infingimenti: **in un processo Node con repository sincrono il conflitto non
+si verifica spontaneamente.** Fra il caricamento e il salvataggio non c'è punto di sospensione,
+quindi nessuna esecuzione può inserirsi. Il meccanismo è corretto, ma qui è *inerte*: si osserva
+solo forzandolo, ed è ciò che fa il test di §4.10 iniettando una scrittura fra `perId` e `salva`.
+È una difesa che non serve oggi e diventa indispensabile il giorno in cui la persistenza ha un
+`await` dentro — cioè al primo database.
 
 **La riprova vive nell'application service, non nel dominio** — `con-riprova.ts`, 3 tentativi,
 attesa 0/10/25 ms. Ricarica l'aggregato ed esegue di nuovo il comando. Al secondo tentativo
@@ -446,32 +540,43 @@ fallimento tecnico ritentabile, e va distinto da un rifiuto di dominio — che �
 
 ## 4.8 Propagazione degli eventi
 
-Handler **asincroni** con tabella **outbox**.
+Handler **asincroni**, consegnati da un bus in-process dopo il salvataggio dell'aggregato.
 
 ```mermaid
 sequenceDiagram
     participant UC as Use case
-    participant DB as Transazione
-    participant D as Dispatcher
+    participant A as Archivio
+    participant B as Event bus
     participant H as Handler
 
-    UC->>DB: salva aggregato + INSERT outbox
-    Note over DB: unica transazione:<br/>o entrambi, o nessuno
-    DB-->>UC: commit
-    D->>DB: SELECT … WHERE pubblicato_il IS NULL
-    D->>H: consegna
-    H->>DB: INSERT shared_eventi_gestiti (handler, eventId)
-    Note over H: se già presente → salta
-    D->>DB: UPDATE pubblicato_il
+    UC->>A: salva aggregato
+    Note over A: nuovo snapshot, versione+1
+    A-->>UC: salvato
+    UC->>B: pubblica gli eventi dell'aggregato
+    B->>H: consegna (asincrona)
+    H->>H: eventId già in shared_eventi_gestiti?
+    Note over H: se sì → salta
 ```
 
-L'evento si scrive nella **stessa transazione** che salva l'aggregato: stato ed evento
-diventano atomici. L'alternativa semplice — emettere dopo il commit — funziona il 99% delle
-volte e perde eventi nell'1% restante, che nel nostro caso significa un promosso mai avvisato.
+**L'outbox è stato rimosso, e la ragione va detta per intero.** Serviva a rendere atomici stato
+ed evento: scritti nella stessa transazione, o entrambi o nessuno. Senza transazione non c'è
+niente da rendere atomico — e soprattutto non c'è più il fallimento da cui proteggeva. L'outbox
+difendeva dal caso «lo stato è committato, il processo muore prima di emettere l'evento»: il
+promosso mai avvisato. Qui, se il processo muore, muore anche lo stato. Tenere l'outbox
+significherebbe pagare un dispatcher, una collezione e un ciclo di polling per una garanzia che
+non protegge da nulla — cioè conservare il meccanismo dopo che la sua motivazione è caduta, che è
+il modo tipico in cui un'architettura accumula cerimonie.
 
-La consegna è **at-least-once**, quindi ogni handler è **idempotente** tramite il registro
-`(handler, eventId)`. Il dispatcher gira in-process: polling breve, più un risveglio immediato
-dopo ogni commit.
+**L'idempotenza invece resta**, e non per simmetria. Non dipendeva dal database ma dalla forma
+della consegna: gli handler sono asincroni, un evento può essere riconsegnato — durante uno
+sviluppo con hot-reload, o quando un handler fallisce e viene ripetuto — e `NotificaPromozione`
+che parte due volte manda due email. Il registro `(handler, eventId)`, ora un `Set` in memoria,
+costa una riga e chiude il caso.
+
+Ciò che si perde davvero è il **recupero dopo un fallimento dell'handler**: senza outbox non c'è
+una coda che ricordi l'evento non ancora gestito, quindi un handler che solleva un'eccezione
+perde il suo evento e nessuno lo ripesca. È accettabile perché il peggiore degli esiti è una
+notifica mancata su un log — ma è una perdita reale, non una semplificazione a costo zero.
 
 ### Gli handler, e l'ordine che conta
 
@@ -507,9 +612,9 @@ Le discipline non restano buone intenzioni.
   ignores: ['**/*.spec.ts'],
   rules: {
     'no-restricted-imports': ['error', { patterns: [
-      { group: ['@nestjs/*', 'drizzle-orm', 'drizzle-orm/*', 'better-sqlite3',
-                'class-validator', 'class-transformer'],
-        message: 'Il dominio non conosce il framework. Definisci una porta.' },
+      { group: ['@nestjs/*', 'class-validator', 'class-transformer',
+                '**/infrastructure/persistence/**'],
+        message: 'Il dominio non conosce il framework né l\'archivio. Definisci una porta.' },
       { group: ['**/application/**', '**/infrastructure/**', '**/read-model/**'],
         message: 'La dipendenza punta verso l\'interno: domain non importa dagli strati esterni.' },
     ]}],
@@ -599,25 +704,34 @@ Uno per invariante, scritti per primi e leggibili da un non programmatore:
 | chi era in attesa e si sfila non promuove nessuno | INV-8 |
 | annullare una sessione già annullata è rifiutato | INV-12 |
 
-Che tutto questo si verifichi **senza database, senza HTTP e senza NestJS** è l'intero punto
-dell'esercizio: se per verificare «il posto va al primo in attesa» servisse avviare un database,
-il modello non starebbe dove crediamo.
+Che tutto questo si verifichi **senza infrastruttura, senza HTTP e senza NestJS** è l'intero
+punto dell'esercizio: se per verificare «il posto va al primo in attesa» servisse avviare
+qualcosa, il modello non starebbe dove crediamo. Questi test non sono cambiati di una riga con la
+rimozione del database, ed è la conferma più diretta che il dominio non lo conosceva.
 
-### 2. Use case — con repository in-memory
+### 2. Use case — con repository in memoria
 
-Orchestrazione ed eventi prodotti: che `annullaIscrizione` scriva `IscrizioneAnnullata` **e**
-`DipendentePromosso` in outbox, che `ProgrammaSessione` rifiuti un corso assente dalla replica
-(INV-2), che la policy P2 annulli solo le sessioni future (INV-11).
+Orchestrazione ed eventi prodotti: che `annullaIscrizione` pubblichi `IscrizioneAnnullata` **e**
+`DipendentePromosso`, che `ProgrammaSessione` rifiuti un corso assente dalla replica (INV-2), che
+la policy P2 annulli solo le sessioni future (INV-11).
 
-### 3. Integrazione — pochi, e questi sì con il database
+### 3. Infrastruttura — pochi, e mirati
 
-| Test | Perché serve un database vero |
+Non più un livello «con il database vero»: sono i test di ciò che l'archivio in memoria deve
+garantire, e che nessun altro livello osserva.
+
+| Test | Cosa verifica |
 |---|---|
-| **due iscrizioni concorrenti sull'ultimo posto** | È il punto in cui l'esercizio ha davvero contesa: uno iscritto, l'altro in lista d'attesa, mai due sullo stesso posto |
-| due corsi con lo stesso titolo in concorrenza | INV-1 è custodita dal vincolo `UNIQUE` (HS-7): è l'unica invariante non verificabile nel dominio |
-| mapping e round-trip dell'aggregato | Che `Sessione` salvata e riletta sia identica, ordine della coda compreso |
-| outbox atomico | Che un fallimento dopo il salvataggio non lasci l'evento senza lo stato, né viceversa |
+| **round-trip dell'aggregato** | Che `Sessione` salvata e riletta sia identica, ordine della coda compreso — e che modificare l'aggregato **senza** salvarlo non alteri l'archivio (§4.7): è il test che smaschera un repository che conserva riferimenti invece di snapshot |
+| conflitto di versione | Iniettando una scrittura fra `perId` e `salva`, il secondo salvataggio solleva `ConflittoDiVersione` e `con-riprova` riapplica il comando: uno iscritto, l'altro in lista d'attesa, mai due sullo stesso posto |
+| due corsi con lo stesso titolo | INV-1 è custodita dall'indice `titoloNormalizzato` (HS-7, §4.7), non da un aggregato |
 | idempotenza degli handler | Consegnare due volte lo stesso evento produce una notifica sola |
+
+Il primo di questi test è **il più importante dell'intero livello** e non esisteva nella versione
+con database, dove l'ORM rendeva impossibile l'errore che verifica. Il secondo ha cambiato natura:
+non osserva più una contesa reale, la **costruisce** — perché in un processo solo non si verifica
+da sé (§4.7). Un test che deve fabbricare la condizione che verifica vale meno di uno che la
+incontra, e questo è il prezzo più concreto pagato alla rimozione del database.
 
 ### 4. End-to-end — pochissimi
 
@@ -714,7 +828,7 @@ implementati come tali:
 | HS-4 | Promozione | Transazionale, non reattiva — INV-8 lo impone | `aggregation.md` §3.6 |
 | HS-5 | Cambia sessione | Nessun comando dedicato; sequenza guidata nella UI | `aggregation.md` §3.6 |
 | HS-6 | Docente | Value object, nessun terzo contesto | `domain.md` §2.6 |
-| HS-7 | Titolo unico | Vincolo `UNIQUE` tradotto in eccezione di dominio | `aggregation.md` §3.7 |
+| HS-7 | Titolo unico | Unicità garantita in persistenza, tradotta in eccezione di dominio — indice, non più `UNIQUE` (§4.7) | `aggregation.md` §3.7 |
 | HS-8 | INV-2 fra contesti | Replica ACL, inconsistenza auto-riparante | `domain.md` §2.7 |
 | HS-9 | Coda a sessione iniziata | Nessuna transizione: decadenza derivata nel read model | `aggregation.md` §3.8 |
 | HS-10 | Indirizzo del destinatario | Viaggia dentro l'evento | `domain.md` §2.8 |
@@ -737,7 +851,7 @@ implementati come tali:
 | Rotte e DTO | AGG §3.11 | §4.6 |
 | Schema di persistenza e mapper | ES, DOM, AGG | §4.7 |
 | Lock ottimistico e riprova | AGG §3.11 | §4.7 |
-| Outbox, idempotenza, ordine handler | DOM §2.10 | §4.8 |
+| Idempotenza e ordine degli handler | DOM §2.10 | §4.8 |
 | Guardiani ESLint e test di contratto | ES, DOM §2.9 | §4.9 |
 | Test, uno per invariante | AGG §3.11 | §4.10 |
 
@@ -746,7 +860,8 @@ implementati come tali:
 Lo stato al termine dei quattro documenti.
 
 - [x] I quattro documenti esistono, e ogni hotspot dichiarato è chiuso con una decisione motivata
-- [ ] Il backend implementa entrambi i contesti, event bus con outbox, read model, notifiche via log
+- [ ] Il backend implementa entrambi i contesti, event bus in-process, read model, notifiche via log
+- [ ] Il repository in memoria conserva snapshot, mai riferimenti: mutare un aggregato non salvato non cambia l'archivio
 - [ ] Le due app frontend consumano solo `packages/contracts`, mai i tipi di dominio
 - [ ] `pnpm lint` passa con zero warning, guardiani architetturali inclusi
 - [ ] Cancellando `infrastructure/`, il dominio compila ancora

@@ -34,6 +34,12 @@ altrove — ed è il motivo per cui vale la pena leggerlo file per file.
   - [`http/`](#http)
   - [`acl/` — l'anticorruption layer](#acl--lanticorruption-layer)
   - [`event-handlers/`](#event-handlers)
+- [Il flusso di una chiamata](#il-flusso-di-una-chiamata)
+  - [Il caso generico](#il-caso-generico)
+  - [I controlli, in ordine di apparizione](#i-controlli-in-ordine-di-apparizione)
+  - [L'esempio: iscriversi a una sessione piena](#lesempio-iscriversi-a-una-sessione-piena)
+  - [Quando il salvataggio trova la versione cambiata](#quando-il-salvataggio-trova-la-versione-cambiata)
+  - [Cosa non c'è nel flusso](#cosa-non-cè-nel-flusso)
 - [Il percorso completo di una richiesta](#il-percorso-completo-di-una-richiesta)
 - [Dove sono presidiate le invarianti](#dove-sono-presidiate-le-invarianti)
 
@@ -547,8 +553,201 @@ programmata nella finestra di `HS-8` sopravviverebbe al ritiro.
 
 ---
 
+## Il flusso di una chiamata
+
+Questa sezione risponde a una domanda sola: **quando arriva una richiesta HTTP, chi decide cosa
+e in quale ordine?** Prima lo schema valido per tutte le rotte di comando, poi un esempio reale
+seguito riga per riga.
+
+La cosa da tenere d'occhio è **dove stanno i controlli**. Sono sparsi su cinque strati, e non
+per disordine: ognuno risponde a una domanda diversa, e nessuno può rispondere a quella
+dell'altro.
+
+### Il caso generico
+
+```
+   ┌──────────────────────────────────────────────────────────────────────────┐
+   │ HTTP                                                      main.ts        │
+   │                                                                          │
+   │  [1] routing         /api/… → controller, oppure 404                     │
+   │  [2] ValidationPipe  la richiesta è ben formata?      → 400              │
+   │  [3] @Utente()       chi sta chiamando?               → 400 senza header │
+   └──────────────────────────────┬───────────────────────────────────────────┘
+                                  │  DTO in inglese
+   ┌──────────────────────────────▼───────────────────────────────────────────┐
+   │ CONTROLLER                               infrastructure/http/            │
+   │                                                                          │
+   │  [4] traduce in comando italiano: nessun if, nessuna regola              │
+   └──────────────────────────────┬───────────────────────────────────────────┘
+                                  │  comando { campi primitivi }
+   ┌──────────────────────────────▼───────────────────────────────────────────┐
+   │ USE CASE                                       application/              │
+   │                                                                          │
+   │  [5] costruisce i value object   valore rappresentabile?  → 400          │
+   │  [6] conRiprova ─┐                                                       │
+   │  [7]   carica    │  l'aggregato esiste?                   → 404          │
+   │  [8]   INVOCA L'AGGREGATO  ↓↓↓                                           │
+   │  [9]   salva     │  qualcuno ha scritto?  ── sì ──→ torna a [7]          │
+   │ [10]   raccoglie gli eventi e svuota                                     │
+   │ [11] pubblica sul bus ── DOPO il salvataggio                             │
+   └──────────────────────────────┬───────────────────────────────────────────┘
+                                  │  sessione.iscrivi(…, adesso)
+   ┌──────────────────────────────▼───────────────────────────────────────────┐
+   │ AGGREGATO                                           domain/              │
+   │                                                                          │
+   │  (a) precondizioni di stato   annullata? iniziata?    → 409 / 422        │
+   │  (b) regole di dominio        duplicato? fuori tempo? → 409 / 422        │
+   │  (c) DECIDE, e muta se stesso ← l'unico punto in cui si decide           │
+   │  (d) emette gli eventi                                                   │
+   │  (e) assicuraCoerenza()       se scatta è un bug      → 500              │
+   └──────────────────────────────┬───────────────────────────────────────────┘
+                                  │  l'aggregato, mutato
+   ┌──────────────────────────────▼───────────────────────────────────────────┐
+   │ PERSISTENZA                     infrastructure/persistence/              │
+   │                                                                          │
+   │ [12] mapper → snapshot piatto: nessun oggetto di dominio in archivio     │
+   │ [13] check-and-set sulla versione   → ConflittoDiVersione,               │
+   │                                       intercettato da [6]                │
+   └──────────────────────────────────────────────────────────────────────────┘
+
+   Qualunque eccezione risalga → FiltroEccezioniDiDominio
+                              → { error, message, status }, uniforme
+```
+
+Tre proprietà di questo schema meritano di essere dette a voce alta:
+
+1. **Il flusso è a senso unico.** Ogni strato conosce solo quello sotto di sé, e l'aggregato non
+   conosce nessuno. Nessuna freccia risale, tranne le eccezioni.
+2. **La decisione avviene in un punto solo**, `(c)`. Tutto ciò che sta prima è preparazione,
+   tutto ciò che sta dopo è registrazione.
+3. **La riprova avvolge da `[7]` a `[10]`**, non solo il salvataggio: riprovare significa
+   *ricaricare e ridecidere*, non ritentare la scrittura di una decisione vecchia.
+
+### I controlli, in ordine di apparizione
+
+| # | Controllo | Dove vive | A quale domanda risponde | Se fallisce |
+| --- | --- | --- | --- | --- |
+| `[1]` | Rotta esistente | Nest | «questo URL esiste?» | `404` |
+| `[2]` | Forma del DTO | `ValidationPipe` + `dto.ts` | «questa **richiesta HTTP** è ben formata?» | `400` |
+| `[3]` | Presenza dell'identità | `shared/http/utente-corrente.ts` | «chi sta chiamando?» | `400` |
+| `[5]` | Value object | `domain/value-objects/` | «questo **valore** può esistere nel dominio?» | `400` (`ValoreNonValido`) |
+| `[7]` | Esistenza dell'aggregato | use case | «di cosa stiamo parlando?» | `404` |
+| `(a)` | Stato dell'aggregato | `Sessione` | «in questo **stato** il comando è ammesso?» | `409` / `422` |
+| `(b)` | Regole di dominio | `Sessione` | «questa **richiesta** è ammessa adesso, da costui?» | `409` / `422` |
+| `(e)` | Coerenza interna | `assicuraCoerenza()` | «l'aggregato è rimasto valido?» | `500` — è un bug |
+| `[13]` | Versione | `CollezioneInMemoria` | «qualcuno ha scritto mentre decidevamo?» | riprova, mai visibile |
+
+**`[2]` e `[5]` sembrano lo stesso controllo e non lo sono**, ed è il caso da capire per capire
+tutto il resto. `@IsInt() @Min(1)` sul DTO e `Capienza.da()` nel dominio verificano lo stesso
+numero, ma rispondono a domande diverse: la prima riguarda un client HTTP, la seconda vale
+**anche quando il comando non arriva da HTTP** — da una policy, da un handler, da un test. Il
+criterio è verificabile: cancellare la `ValidationPipe` deve lasciare il dominio altrettanto
+sicuro, solo con messaggi peggiori.
+
+**`(a)` e `(b)` sono separati perché producono stati diversi.** Una precondizione di stato è un `409`:
+il client può riconciliarsi rileggendo, e in un altro momento lo stesso comando sarebbe passato.
+Una regola di business è un `422`: rileggere non cambia nulla, perché il tempo non torna
+indietro.
+
+E soprattutto: **l'ordine non è ottimizzabile a piacere**. I controlli vanno dal più economico
+al più costoso, ma la ragione vera è un'altra — «c'è posto per me?» è l'**ultima** domanda, e
+non può essere anticipata. Chiederla prima, magari a un read model, significherebbe decidere su
+un dato letto un istante fa, che è esattamente l'anti-pattern che fa prendere a due dipendenti
+lo stesso ultimo posto.
+
+### L'esempio: iscriversi a una sessione piena
+
+La chiamata più significativa del sistema, perché attraversa ogni strato e finisce con
+l'esito che il committente ha chiesto di non trattare come errore.
+
+```http
+POST /api/sessions/8f3e.../enrollments
+X-Utente: bruno@example.com
+```
+
+Stato di partenza: sessione da **1 posto**, Anna già iscritta, coda vuota.
+
+| | Cosa succede | File |
+| --- | --- | --- |
+| `[1]` | Nest instrada su `SessionsController.iscrivi` | `sessions.controller.ts` |
+| `[2]` | La `ValidationPipe` non ha nulla da validare: **questa rotta non ha corpo**, e non per dimenticanza — il dipendente non è un campo (`INV-9`, `HS-11`) | `main.ts` |
+| `[3]` | `@Utente()` legge `x-utente`, normalizza `bruno@example.com`, ne deriva l'UUID v5 `a1b2…`. Header assente → `400`, e qui finisce | `utente-corrente.ts` |
+| `[4]` | Il controller costruisce il comando — e non fa altro: `{ sessioneId: '8f3e…', dipendenteId: 'a1b2…', email: 'bruno@example.com' }` | `sessions.controller.ts` |
+| `[5]` | `SessioneId.da()`, `DipendenteId.da()`, `Email.da()`. Se l'header fosse `bruno` senza `@`, **qui** nascerebbe `ValoreNonValido` → `400`: nessun DTO valida quell'header, il value object è l'unica difesa | `value-objects/` |
+| `[6]` | `conRiprova` apre il primo tentativo | `con-riprova.ts` |
+| `[7]` | `repository.perId()` → snapshot clonato → `aDominio` → `Sessione.ricostruisci`. Nessuna regola viene applicata: si sta ripristinando un fatto, non compiendolo. `null` → `SessioneNonTrovata` → `404` | `repository-sessioni.in-memoria.ts` |
+| `[8]` | `sessione.iscrivi(dipendenteId, email, orologio.adesso())` — **il tempo entra qui, da una porta**, non da `new Date()` | `iscriviti.use-case.ts` |
+| `(a)` | `esigiNonAnnullata()` → `409` · `esigiNonIniziata(adesso)` → `422` | `sessione.ts` |
+| `(b)` | Bruno è già presente? No. Se lo fosse: `IscrizioneDuplicata` → `409` | `sessione.ts` |
+| `(c)` | `numeroIscritti() (1) < capienza (1)` è **falso** → `IN_ATTESA`, con `ordine = 2`. **Nessuna eccezione**: non è un rifiuto, è l'altro esito | `sessione.ts` |
+| `(d)` | Emette `DipendenteMessoInAttesa` con `posizione: 1` | `eventi.ts` |
+| `(e)` | `assicuraCoerenza()`: 1 ≤ 1 ✓, nessun posto libero con coda non vuota ✓, ordini distinti ✓ | `sessione.ts` |
+| `[9]` | `repository.salva()` → `aSnapshot(…, versioneLetta + 1)` → check-and-set: la versione in archivio è ancora quella letta, la scrittura passa | `sessione.mapper.ts` |
+| | `sessione.posizioneInCoda(bruno)` → `1` — letta **dopo** il salvataggio, sulla coda di adesso | `sessione.ts` |
+| `[10]` | Raccoglie l'evento e chiama `svuotaEventi()`: se ci fosse una riprova, il fantasma del tentativo precedente non deve sopravvivere | `iscriviti.use-case.ts` |
+| `[11]` | `bus.pubblica([DipendenteMessoInAttesa])` — **dopo** il salvataggio. La consegna agli handler è asincrona e non trattiene la risposta | `event-bus-in-process.ts` |
+| `[4']` | Il controller ritraduce in inglese: `IN_ATTESA` → `WAITLISTED` | `sessions.controller.ts` |
+
+```http
+201 Created
+{ "status": "WAITLISTED", "position": 1 }
+```
+
+**`201`, non `409`.** È il punto in cui l'intero esercizio si vede in una riga di risposta: a
+posti esauriti non si viene respinti. Un `409` qui sarebbe la traduzione HTTP di un errore che
+il dominio ha deliberatamente evitato di commettere.
+
+Se invece la sessione avesse avuto un posto libero, sarebbe cambiato **solo il ramo `(c)`** —
+stesso percorso, stesso numero di scritture, evento diverso e `{ "status": "ENROLLED" }`.
+
+### Quando il salvataggio trova la versione cambiata
+
+Stesso esempio, ma fra il passo `[7]` e il passo `[9]` qualcun altro ha scritto la stessa
+sessione:
+
+```
+ [7] carica       versione 4
+ (c) decide       "c'è posto: ISCRITTO"          ← deciso su uno stato ormai vecchio
+ [9] salva        in archivio c'è la versione 5  → ConflittoDiVersione
+      │
+      └── conRiprova intercetta, attende 10 ms, e ricomincia da [7]
+ [7] ricarica     versione 5, con l'iscrizione dell'altro
+ (c) ridecide     "posti esauriti: IN_ATTESA"    ← la stessa regola, su uno stato aggiornato
+ [9] salva        versione 6 ✓
+```
+
+Il punto è ciò che **non** compare in quello schema:
+
+> Non esiste un ramo di codice per «ho perso la gara». C'è solo la regola di dominio riapplicata
+> a uno stato aggiornato.
+
+L'aggregato non sa che c'è stata una contesa, e non ha un caso in più da gestire. Esaurite le tre
+riprove, `ConflittoDiVersioneNonRisolto` → `503` con `Retry-After: 1` — l'unico caso in cui il
+client vede il meccanismo, ed è dichiarato come fallimento **tecnico** e ritentabile, non come
+rifiuto di dominio.
+
+*(Nota onesta, già scritta sopra: con un solo processo e persistenza sincrona questo ramo non
+scatta spontaneamente. Il test di livello 3 lo costruisce a mano.)*
+
+### Cosa non c'è nel flusso
+
+L'elenco delle assenze dice quanto lo schema:
+
+- **Nessuna autorizzazione.** Niente guard, niente ruoli, nessun `403`. `INV-9` non è un
+  controllo di accesso: è la domanda «di chi è questa iscrizione?», e vive nel dominio.
+- **Nessuna decisione nel controller.** Non c'è un `if` sui posti residui, né un controllo di
+  stato prima di chiamare l'use case. Se ci fosse, la regola esisterebbe in due punti.
+- **Nessuna lettura per decidere.** Il read model non compare in nessun passo di scrittura:
+  serve a *mostrare*, mai a *decidere*.
+- **Nessuna chiamata al catalogo.** Dove serve sapere se un corso è pubblicato — in
+  `ProgrammaSessione` — si interroga la porta `CorsiPubblicati`, cioè una replica locale. Il
+  confine fra contesti non viene mai attraversato in modo sincrono.
+
+---
+
 ## Il percorso completo di una richiesta
 
+Il secondo esempio, e quello che mostra `HS-4` in azione:
 `DELETE /api/sessions/abc/enrollments/me`, con l'ultimo posto occupato e due persone in coda:
 
 ```

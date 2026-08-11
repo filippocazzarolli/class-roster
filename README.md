@@ -68,8 +68,8 @@ Se hai dieci minuti: `doc/README.md`, poi `event-storming.md` §1.0 e `aggregati
 | Monorepo | Turborepo + pnpm |
 | Backend | NestJS — **un solo progetto**, moduli per bounded context |
 | Frontend | React, **due app**: una per attore |
-| Persistenza | SQL state-based con Drizzle — SQLite in sviluppo, schema portabile su Postgres |
-| Eventi fra contesti | Event bus in-process, handler asincroni, tabella outbox |
+| Persistenza | **In memoria**, state-based — nessun database, repository dietro porta |
+| Eventi fra contesti | Event bus in-process, handler asincroni e idempotenti |
 | Identità | Nessuna autenticazione: header `X-Utente`, letto in un solo punto |
 
 ```
@@ -87,6 +87,12 @@ packages/
 Il numero di app frontend è **invisibile al backend**: i moduli dell'API sono i bounded
 context, mai gli attori. E `packages/contracts` è il punto in cui la traduzione è già avvenuta
 — il frontend vede `Session`, mai `Sessione`.
+
+**Non c'è database, ed è una scelta.** Lo stato vive in memoria e muore con il processo: si
+avvia con `pnpm dev` e nient'altro. Il dominio non se ne accorge — le porte dei repository
+esistevano già, e ne cambia solo l'implementazione — ma il prezzo è dichiarato in
+`doc/architecture.md` §4.1: con un'unica implementazione, l'indipendenza dalla persistenza resta
+un'affermazione e non una dimostrazione.
 
 ---
 

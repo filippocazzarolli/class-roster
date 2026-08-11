@@ -205,7 +205,8 @@ La tabella che `event-storming.md` §1.8 ha lasciato in bianco.
 | **INV-11** | Il ritiro annulla le sessioni future, non le passate | ⚠️ **Policy P2**, non un aggregato | **Eventuale** |
 | **INV-12** | Una sessione annullata non torna attiva | `Sessione.annulla` | Immediata |
 
-Dieci invarianti su dodici sono difese da un aggregato, senza toccare l'infrastruttura. È il numero
+Dieci invarianti su dodici sono difese **dal dominio** — nove dall'aggregato `Sessione`, INV-3
+dal value object `Capienza` — senza toccare l'infrastruttura. È il numero
 che rende sensata la piramide di test rovesciata di `architecture.md` §4.10. Le due eccezioni —
 INV-1 e INV-11 — non sono difetti: sono **invarianti che attraversano più aggregati**, e nessun
 aggregato può custodire ciò che non vede. Vanno però dichiarate, perché il costo di

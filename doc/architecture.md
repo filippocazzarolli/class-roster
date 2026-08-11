@@ -67,7 +67,7 @@ apps/api/src/
 │   │   ├── value-objects/                 SessioneId, Capienza, Luogo, Docente, …
 │   │   ├── eventi.ts                      eventi di dominio + NOMI_EVENTI_ISCRIZIONI
 │   │   ├── errori.ts                      eccezioni di dominio
-│   │   └── porte/                         RepositorySessioni, CorsiPubblicati
+│   │   └── ports/                         RepositorySessioni, CorsiPubblicati
 │   ├── application/
 │   │   ├── programma-sessione.use-case.ts
 │   │   ├── iscriviti.use-case.ts
@@ -157,7 +157,19 @@ Ogni vincolo è verificato **due volte**, in due punti con due scopi diversi.
 | capienza intera ≥ 1 | `@IsInt() @Min(1)` | `Capienza` (INV-3) |
 | data `YYYY-MM-DD` | `@Matches(/^\d{4}-\d{2}-\d{2}$/)` | `DataLocale` |
 | ora `HH:MM` | `@Matches(/^\d{2}:\d{2}$/)` | `OraLocale` |
-| email ben formata | `@IsEmail()` | `Email` |
+| luogo `AULA` con nome, `ONLINE` senza | `@IsIn([…])` + `@ValidateIf(tipo === 'AULA')` | `Luogo` |
+| email ben formata | **nessun DTO** — arriva dall'header | `Email` |
+
+L'ultima riga è l'eccezione che conferma la regola, e va letta: **nessun DTO ha un campo
+email**, perché l'indirizzo non viene mai dal corpo della richiesta ma dall'header `X-Utente`
+(§4.6). Del confine HTTP resta solo la verifica che l'header ci sia; la forma dell'indirizzo la
+controlla il value object, che risponde `400` tramite `ValoreNonValido`. È il caso in cui la
+seconda difesa **è** l'unica difesa, ed è la ragione per cui esiste.
+
+La riga del luogo merita una nota, perché è costata un difetto vero: senza `@ValidateIf` i
+decoratori di `name` si applicano anche quando il tipo è `ONLINE`, e una sessione online viene
+rifiutata con «name must be a string» — un vincolo che il modello non ha. Un tipo somma nel
+dominio richiede una validazione condizionale nel DTO, o la traduzione perde un caso.
 
 Non è ridondanza. «Questa richiesta HTTP è ben formata?» e «questo valore può esistere nel mio
 dominio?» sono domande distinte: la prima è rilevante solo per un client HTTP, la seconda vale
@@ -249,8 +261,21 @@ Perché 409 e 422 non finiscano assegnati a intuito:
 | `SessioneNelPassato` | iscrizioni | **422** | Programmare a data trascorsa |
 | `SessioneGiaIniziata` | iscrizioni | **422** | INV-6, dipende dal tempo |
 | `AnnullamentoFuoriTermine` | iscrizioni | **422** | INV-10, dipende dal tempo |
-| *(nessuna — `ValidationPipe`)* | http | **400** | Richiesta malformata, mai dal dominio |
+| *(nessuna — `ValidationPipe`)* | http | **400** | Richiesta malformata dal client HTTP |
+| `ValoreNonValido` | shared | **400** | Un value object rifiuta il valore — vedi la nota qui sotto |
 | `ConflittoDiVersioneNonRisolto` | shared | **503** + `Retry-After: 1` | Contesa non risolta dopo i retry (§4.7) |
+
+> **`ValoreNonValido → 400` è uno scostamento dichiarato**, e non una svista. La riga sopra
+> assegna i formati malformati alla `ValidationPipe` — «400, mai dal dominio» — ma §4.2 pretende
+> che ogni vincolo viva **anche** nel value object. Sul percorso HTTP questa eccezione è
+> irraggiungibile, perché il DTO intercetta prima; resta raggiungibile quando il comando arriva
+> da una policy, da un handler o da un test, e in un caso concreto e quotidiano: l'email letta
+> da `X-Utente`, che nessun DTO valida. `400` è la risposta onesta — la richiesta non era
+> rappresentabile nel dominio.
+>
+> `ConflittoDiVersione` (senza «NonRisolto») **non è in tabella e non deve esserci**: la
+> intercetta `con-riprova` e non raggiunge mai il chiamante. Il test di contratto di §4.9 la
+> esclude esplicitamente per questo.
 
 Corpo della risposta, uniforme:
 
@@ -269,7 +294,7 @@ contratto (§4.9) che fallisce se una classe di errore non ha uno stato dichiara
 
 ## 4.5 Read model
 
-*Debito di `event-storming.md` §1.6.* Due letture, come previsto.
+*Debito di `event-storming.md` §1.6.* Tre letture, una per read model dichiarato in §1.6.
 
 **Sono letture dedicate sugli snapshot del modulo, non proiezioni materializzate.**
 La persistenza è state-based: una proiezione separata aggiungerebbe una consistenza eventuale
@@ -437,7 +462,7 @@ iscrizioni_sessioni         Map<SessioneId, SessioneSnapshot>
                               stato, motivoAnnullamento, versione,
                               iscrizioni: [{ dipendenteId, email, stato, ordine }] }
 
-iscrizioni_corsi_pubblicati Map<CorsoId, { titolo, pubblicato, aggiornatoIl }>   ← replica ACL
+iscrizioni_corsi_pubblicati Map<CorsoId, { titolo, pubblicato }>                ← replica ACL
 
 shared_eventi_gestiti       Set<`${handler}|${eventId}`>
 
@@ -457,7 +482,7 @@ la difende più al posto nostro, e l'unico presidio resta il guardiano ESLint di
 
 ### I formati, isolati
 
-Date e ore restano **stringhe** `YYYY-MM-DD` e `HH:MM:SS`, mai numeri: un intero in millisecondi
+Date e ore restano **stringhe** `YYYY-MM-DD` e `HH:MM`, mai numeri: un intero in millisecondi
 reintrodurrebbe il fuso orario che il modello ha escluso, e i due formati sono lessicograficamente
 ordinabili — l'ordinamento di R1 funziona per costruzione. I tipi degli snapshot vivono in
 `shared/persistence/tipi.ts`, così il giorno in cui diventano colonne il lavoro è locale a un file.
@@ -605,53 +630,80 @@ Le discipline non restano buone intenzioni.
 
 ### ESLint — la regola della dipendenza
 
+I pattern vivono in costanti, perché vanno **ricomposti** più avanti:
+
 ```js
-// eslint.config.js (flat config) — estratto
+// apps/api/eslint.config.mjs (flat config) — estratto
+const REGOLA_DELLA_DIPENDENZA = [
+  { group: ['@nestjs/*', 'class-validator', 'class-transformer', '**/infrastructure/**'],
+    message: 'Il dominio non conosce il framework né l\'archivio. Definisci una porta.' },
+  { group: ['**/application/**', '**/read-model/**'],
+    message: 'La dipendenza punta verso l\'interno: domain non importa dagli strati esterni.' },
+];
+
+const NIENTE_OROLOGIO = [
+  { selector: "NewExpression[callee.name='Date']",
+    message: 'Niente orologio qui: l\'istante corrente arriva dalla porta Orologio.' },
+  { selector: "MemberExpression[object.name='Date'][property.name='now']",
+    message: 'Idem: usa la porta Orologio.' },
+];
+
+const NIENTE_CASO = { selector: "MemberExpression[object.name='Math'][property.name='random']",
+  message: 'Il dominio è deterministico: usa GeneratoreDiId.' };
+
 {
-  files: ['apps/api/src/**/domain/**/*.ts'],
+  files: ['src/**/domain/**/*.ts'],
   ignores: ['**/*.spec.ts'],
   rules: {
-    'no-restricted-imports': ['error', { patterns: [
-      { group: ['@nestjs/*', 'class-validator', 'class-transformer',
-                '**/infrastructure/persistence/**'],
-        message: 'Il dominio non conosce il framework né l\'archivio. Definisci una porta.' },
-      { group: ['**/application/**', '**/infrastructure/**', '**/read-model/**'],
-        message: 'La dipendenza punta verso l\'interno: domain non importa dagli strati esterni.' },
-    ]}],
-    'no-restricted-syntax': ['error',
-      { selector: "NewExpression[callee.name='Date']",
-        message: 'Niente orologio nel dominio: l\'istante corrente arriva dalla porta Orologio.' },
-      { selector: "MemberExpression[object.name='Date'][property.name='now']",
-        message: 'Idem: usa la porta Orologio.' },
-      { selector: "MemberExpression[object.name='Math'][property.name='random']",
-        message: 'Il dominio è deterministico: usa GeneratoreDiId.' },
-    ],
+    'no-restricted-imports': ['error', { patterns: REGOLA_DELLA_DIPENDENZA }],
+    'no-restricted-syntax': ['error', ...NIENTE_OROLOGIO, NIENTE_CASO],
   },
+},
+{
+  files: ['src/**/application/**/*.ts'],
+  ignores: ['**/*.spec.ts'],
+  rules: { 'no-restricted-syntax': ['error', ...NIENTE_OROLOGIO] },
 },
 ```
 
-Il divieto di `new Date()` si estende con la stessa configurazione a `**/application/**`.
+Il divieto di `new Date()` si estende ad `application/`: il tempo entra da `Orologio` anche
+negli use case, o la regola delle 24 ore sarebbe aggirabile un livello più in su.
 
 ### ESLint — i due divieti fra contesti
 
 ```js
 {
-  files: ['apps/api/src/iscrizioni/**/*.ts'],
+  files: ['src/iscrizioni/**/*.ts'],
   ignores: ['**/*.spec.ts'],
-  rules: { 'no-restricted-imports': ['error', { patterns: [
-    { group: ['**/catalogo/**', 'src/catalogo/*'],
-      message: 'Bounded context: se serve un dato dal catalogo, arriva per evento e passa dall\'ACL.' },
-  ]}]},
+  rules: { 'no-restricted-imports': ['error', { patterns: [DIVIETO_CATALOGO] }] },
 },
 {
-  files: ['apps/api/src/catalogo/**/*.ts'],
+  files: ['src/catalogo/**/*.ts'],
   ignores: ['**/*.spec.ts'],
-  rules: { 'no-restricted-imports': ['error', { patterns: [
-    { group: ['**/iscrizioni/**', 'src/iscrizioni/*'],
-      message: 'Bounded context: il catalogo non sa di avere clienti.' },
-  ]}]},
+  rules: { 'no-restricted-imports': ['error', { patterns: [DIVIETO_ISCRIZIONI] }] },
 },
 ```
+
+> ⚠️ **In flat config le regole non si fondono, e questa è la trappola che rende i guardiani
+> inutili senza avvisare.** Per un dato file vince **l'ultimo blocco** che definisce quella
+> regola. Un file in `iscrizioni/domain/` corrisponde sia alla regola della dipendenza sia al
+> divieto fra contesti: il secondo blocco **azzera il primo**, e da quel momento un aggregato
+> può importare `@nestjs/common` senza che nessuno se ne accorga. È esattamente ciò che è
+> successo la prima volta, ed è stato scoperto solo scrivendo violazioni apposta.
+>
+> La cura è ricomporre esplicitamente gli insiemi dove si sovrappongono:
+>
+> ```js
+> {
+>   files: ['src/iscrizioni/**/domain/**/*.ts'],
+>   ignores: ['**/*.spec.ts'],
+>   rules: { 'no-restricted-imports': ['error',
+>     { patterns: [...REGOLA_DELLA_DIPENDENZA, DIVIETO_CATALOGO] }] },
+> },
+> ```
+>
+> **Un guardiano va verificato con una violazione deliberata**, o si sta solo sperando che
+> funzioni.
 
 **I file di test sono esentati**, ed è una scelta e non una scorciatoia: osservano il sistema da
 fuori, ed è esattamente così che si verifica che i due lati di un contratto coincidano — cosa
@@ -659,18 +711,30 @@ che i due test seguenti fanno importando entrambi i lati.
 
 ### Test di contratto 1 — ogni errore ha uno stato HTTP
 
-Il filtro possiede un registro `Map<classe, stato>`. Il test scandisce i file
-`**/domain/**/errori.ts`, estrae ogni classe che estende `ErroreDiDominio`, e **fallisce se una
-non è nel registro**. Aggiungere un'eccezione senza decidere come si presenta al client diventa
-impossibile. La scansione dei file — invece di un elenco importato — è deliberata: un barrel si
-dimentica di aggiornare, una cartella no.
+Il filtro possiede un registro `Map<classe, stato>`. Il test importa i moduli
+`**/domain/errori.ts`, estrae per riflessione ogni classe che estende `ErroreDiDominio`, e
+**fallisce se una non è nel registro**. Aggiungere un'eccezione senza decidere come si presenta
+al client diventa impossibile.
+
+Un elenco di moduli importati, però, ha lo stesso difetto del barrel: si dimentica di
+aggiornarlo, e le eccezioni di un file nuovo — o di un terzo contesto — non sarebbero controllate
+da nessuno, in silenzio. Per questo il test fa **anche** una cosa in più: scandisce
+`src/` alla ricerca di ogni `errori.ts` sotto una cartella `domain`, e verifica che l'elenco
+trovato coincida con quello importato. Un file di errori che sfugge al test fa fallire il test.
 
 ### Test di contratto 2 — l'ACL parla la stessa lingua del catalogo
 
 `catalogo/domain/eventi.ts` esporta `NOMI_EVENTI_CATALOGO`; l'ACL di iscrizioni ridichiara le
-proprie costanti in `iscrizioni/infrastructure/acl/eventi-catalogo.ts`, perché non può importarle
-(divieto 1). Il test — esente dal divieto — importa **entrambi** e verifica che i nomi
-coincidano, e che l'ACL sappia tradurre un payload d'esempio prodotto dal catalogo.
+proprie costanti in `iscrizioni/infrastructure/acl/replica-corsi-pubblicati.ts`, perché non può
+importarle (divieto 1). Il test — esente dal divieto — importa **entrambi i lati** e verifica le
+due metà del contratto:
+
+1. **I nomi** coincidono, e `CorsoCreato` resta fuori (un corso in bozza non entra nella replica,
+   o INV-2 si aprirebbe un varco).
+2. **I payload** si traducono: gli eventi non sono scritti a mano nel test, sono **prodotti dalle
+   factory vere del catalogo** e dati in pasto all'ACL. Senza questa metà, rinominare un campo del
+   payload non romperebbe alcuna compilazione — l'ACL legge `payload.titolo` per nome — e la
+   replica si riempirebbe di `undefined` in silenzio.
 
 È il test che dà valore alla duplicazione: la ridichiarazione è il costo del confine, e questo
 test è ciò che impedisce al costo di diventare un difetto silenzioso.
@@ -724,8 +788,9 @@ garantire, e che nessun altro livello osserva.
 |---|---|
 | **round-trip dell'aggregato** | Che `Sessione` salvata e riletta sia identica, ordine della coda compreso — e che modificare l'aggregato **senza** salvarlo non alteri l'archivio (§4.7): è il test che smaschera un repository che conserva riferimenti invece di snapshot |
 | conflitto di versione | Iniettando una scrittura fra `perId` e `salva`, il secondo salvataggio solleva `ConflittoDiVersione` e `con-riprova` riapplica il comando: uno iscritto, l'altro in lista d'attesa, mai due sullo stesso posto |
-| due corsi con lo stesso titolo | INV-1 è custodita dall'indice `titoloNormalizzato` (HS-7, §4.7), non da un aggregato |
-| idempotenza degli handler | Consegnare due volte lo stesso evento produce una notifica sola |
+| due corsi con lo stesso titolo | INV-1 è custodita dall'indice `titoloNormalizzato` (HS-7, §4.7), non da un aggregato — compresa la conseguenza meno ovvia: un salvataggio fallito **non** lascia il titolo occupato |
+| idempotenza degli handler | Consegnare due volte lo stesso evento invoca l'handler una volta sola. La chiave è `(handler, eventId)` e non il solo `eventId`: due handler devono ricevere entrambi lo stesso evento, o su `CorsoRitirato` la policy P2 non scatterebbe mai |
+| ordine e fallimenti sul bus | Gli handler ricevono nell'ordine di sottoscrizione (§4.8, vincolante), e un handler che solleva un'eccezione non impedisce agli altri di ricevere — il fallimento resta sul log, che senza outbox è l'unica traccia |
 
 Il primo di questi test è **il più importante dell'intero livello** e non esisteva nella versione
 con database, dove l'ORM rendeva impossibile l'errore che verifica. Il secondo ha cambiato natura:
@@ -737,6 +802,18 @@ incontra, e questo è il prezzo più concreto pagato alla rimozione del database
 
 Un percorso completo via HTTP: pubblica corso → programma sessione da 1 posto → A si iscrive →
 B va in coda → A annulla → B risulta iscritto e la notifica compare nel log.
+
+Che B sia stato promosso si verifica **senza read model**, e in modo più stringente di una
+lettura: si iscrive un terzo. Se la promozione non fosse avvenuta il posto sarebbe libero e il
+terzo risulterebbe `ENROLLED` — è esattamente lo scavalco che HS-4 esiste per impedire. Finché
+il contesto `notifiche` non esiste, l'ultimo passo («la notifica compare nel log») resta
+l'unico non verificabile: gli eventi che lo alimenterebbero vengono comunque prodotti, e sono
+verificati al livello 2.
+
+Accanto al percorso, l'e2e presidia il **confine HTTP**, che nessun livello inferiore
+attraversa: l'header `X-Utente` mancante, un campo non dichiarato che dev'essere rifiutato e non
+ignorato, una sessione `ONLINE` senza nome dell'aula, e la forma uniforme del corpo d'errore di
+§4.4. È il livello in cui si scoprono i difetti di **traduzione**, non quelli di regola.
 
 ---
 
@@ -861,12 +938,18 @@ Lo stato al termine dei quattro documenti.
 
 - [x] I quattro documenti esistono, e ogni hotspot dichiarato è chiuso con una decisione motivata
 - [ ] Il backend implementa entrambi i contesti, event bus in-process, read model, notifiche via log
-- [ ] Il repository in memoria conserva snapshot, mai riferimenti: mutare un aggregato non salvato non cambia l'archivio
+      → **fatti** i due contesti e il bus; **mancano** read model (§4.5) e `notifiche` (P3, P4)
+- [x] Il repository in memoria conserva snapshot, mai riferimenti: mutare un aggregato non salvato non cambia l'archivio
 - [ ] Le due app frontend consumano solo `packages/contracts`, mai i tipi di dominio
-- [ ] `pnpm lint` passa con zero warning, guardiani architetturali inclusi
-- [ ] Cancellando `infrastructure/`, il dominio compila ancora
-- [ ] I test di dominio girano in meno di un secondo e si leggono come le regole di `event-storming.md` §1.0
+- [x] `pnpm lint` passa con zero warning, guardiani architetturali inclusi
+- [x] Cancellando `infrastructure/`, il dominio compila ancora
+      → verificato compilando `src/**/domain/**` isolato, senza `application/` né `infrastructure/`
+- [x] I test di dominio girano in meno di un secondo e si leggono come le regole di `event-storming.md` §1.0
 - [ ] Le due app frontend coprono le quattro viste
+
+Le tre caselle rimaste sono **due lavori dichiarati**, non difetti scoperti: il read model con le
+sue tre rotte `GET`, il contesto `notifiche`, e il frontend. Tutto ciò che i quattro documenti
+descrivono come già deciso è invece implementato e coperto da test.
 
 Il criterio che ha arbitrato ogni scelta di questi quattro documenti resta quello di partenza, e
 va riapplicato a ogni riga del codice che seguirà:

@@ -17,6 +17,21 @@ const REGOLA_DELLA_DIPENDENZA = [
   },
 ];
 
+/**
+ * Il read model legge gli snapshot, mai gli aggregati — architecture.md §4.5.
+ *
+ * Con l'archivio in memoria `repositorySessioni.perId(...)` restituisce un oggetto di
+ * dominio pronto da interrogare: senza questa regola, «le letture non passano dai
+ * repository» resterebbe affidata alla memoria di chi scrive. Le primitive di
+ * `shared/domain` — IstanteLocale, Orologio — restano ammesse: sono il modo in cui il
+ * tempo entra, e non sono aggregati di nessun contesto.
+ */
+const DIVIETO_AGGREGATI = {
+  group: ['../domain/**', '**/iscrizioni/domain/**', '**/catalogo/domain/**'],
+  message:
+    'Il read model legge gli snapshot dall\'archivio, mai gli aggregati ricostruiti (§4.5).',
+};
+
 const DIVIETO_CATALOGO = {
   group: ['**/catalogo/**', 'src/catalogo/*'],
   message:
@@ -119,6 +134,33 @@ export default tseslint.config(
     ignores: ['**/*.spec.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [DIVIETO_ISCRIZIONI] }],
+    },
+  },
+
+  // Il read model: niente aggregati, niente orologio di sistema. I pattern del
+  // divieto fra contesti sono ripetuti qui perché i due blocchi qui sopra li
+  // definiscono già per lo stesso file — e in flat config vince l'ultimo, non
+  // l'unione dei due.
+  {
+    files: ['src/iscrizioni/read-model/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [DIVIETO_AGGREGATI, DIVIETO_CATALOGO] },
+      ],
+      'no-restricted-syntax': ['error', ...NIENTE_OROLOGIO],
+    },
+  },
+  {
+    files: ['src/catalogo/read-model/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [DIVIETO_AGGREGATI, DIVIETO_ISCRIZIONI] },
+      ],
+      'no-restricted-syntax': ['error', ...NIENTE_OROLOGIO],
     },
   },
 

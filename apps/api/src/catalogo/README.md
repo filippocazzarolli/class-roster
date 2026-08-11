@@ -53,15 +53,20 @@ catalogo/
 │   ├── comandi.ts
 │   └── use-case.ts                  ← tutti e quattro, in un file solo
 │
-└── infrastructure/
-    ├── http/
-    │   ├── courses.controller.ts    ← 4 rotte
-    │   ├── dto.ts
-    │   └── stati-http.catalogo.ts
-    └── persistence/
-        ├── corso.snapshot.ts        ← conserva anche il titolo normalizzato
-        ├── corso.mapper.ts
-        └── repository-corsi.in-memoria.ts   ← il custode di INV-1
+├── infrastructure/
+│   ├── http/
+│   │   ├── courses.controller.ts    ← 4 comandi + R3
+│   │   ├── dto.ts
+│   │   ├── read-dto.ts              ← la traduzione IT → EN della lettura
+│   │   └── stati-http.catalogo.ts
+│   └── persistence/
+│       ├── corso.snapshot.ts        ← conserva anche il titolo normalizzato
+│       ├── corso.mapper.ts
+│       └── repository-corsi.in-memoria.ts   ← il custode di INV-1
+│
+└── read-model/
+    ├── letture-corsi.ts             ← la porta, e i DTO che restituisce
+    └── letture-corsi.in-memoria.ts  ← R3 sugli snapshot, mai sugli aggregati
 ```
 
 ---
@@ -286,8 +291,9 @@ L'elenco delle cose assenti dice quanto le altre due:
   direttamente quel caso d'uso, i due contesti sarebbero uno.
 - **Non conosce `INV-11`** («si annullano solo le sessioni future»), né sa che esistano le
   sessioni.
-- **Non ha una lettura pubblica**: `GET /api/courses` fa parte del read model, che non è
-  ancora implementato.
+- **Non conosce il conteggio delle sessioni** che la vista catalogo mostra accanto a ogni
+  corso: `GET /api/courses` (R3) restituisce i corsi e nient'altro, e la composizione con il
+  dato di `iscrizioni` avviene nel frontend — `read-model/letture-corsi.ts`.
 
 ---
 

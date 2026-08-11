@@ -1,11 +1,22 @@
-import { Body, Controller, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
+import type { Course, CreatedResponse } from '@repo/contracts';
 import {
   CreaCorsoUseCase,
   ModificaDettagliCorsoUseCase,
   PubblicaCorsoUseCase,
   RitiraCorsoUseCase,
 } from '../../application/use-case';
+import { LettureCorsi } from '../../read-model/letture-corsi';
 import { CreateCourseDto, UpdateCourseDto } from './dto';
+import { aCourse } from './read-dto';
 
 /**
  * Le rotte di `catalogo` — `architecture.md` §4.6.
@@ -25,10 +36,26 @@ export class CoursesController {
     private readonly modifica: ModificaDettagliCorsoUseCase,
     private readonly pubblica: PubblicaCorsoUseCase,
     private readonly ritira: RitiraCorsoUseCase,
+    private readonly letture: LettureCorsi,
   ) {}
 
+  /**
+   * R3 — `architecture.md` §4.5.
+   *
+   * L'elenco **non porta il conteggio delle sessioni programmate**: quel dato è di
+   * `iscrizioni`, e comporlo qui costerebbe una riga e una foreign key fra moduli
+   * (`domain.md` §2.9). Le due letture restano separate e si compongono nel frontend.
+   *
+   * Nessun filtro per stato: il responsabile deve vedere anche le bozze e i corsi
+   * ritirati — è la sua vista di gestione, non una vetrina.
+   */
+  @Get()
+  elencoCorsi(): Course[] {
+    return this.letture.listaCorsi().map(aCourse);
+  }
+
   @Post()
-  creaCorso(@Body() dto: CreateCourseDto): { id: string } {
+  creaCorso(@Body() dto: CreateCourseDto): CreatedResponse {
     const { corsoId } = this.crea.esegui({
       titolo: dto.title,
       descrizione: dto.description,

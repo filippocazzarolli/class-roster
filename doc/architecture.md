@@ -294,7 +294,15 @@ contratto (§4.9) che fallisce se una classe di errore non ha uno stato dichiara
 
 ## 4.5 Read model
 
-*Debito di `event-storming.md` §1.6.* Tre letture, una per read model dichiarato in §1.6.
+*Debito di `event-storming.md` §1.6.* Tre letture, una per read model dichiarato in §1.6 —
+più una quarta, R4, che §1.6 non dichiara.
+
+**Perché R4 non compare nell'event storming.** §1.6 elenca ciò che gli attori guardano e ne
+nomina tre; §4.11 elenca quattro viste, e una di quelle — «programmazione e annullamento
+sessioni» — non aveva alcuna lettura che la alimentasse. Il buco si vede solo a valle, quando si
+prova a disegnare la schermata. Non viene aggiunto a §1.6: quel paragrafo registra ciò che il
+workshop ha prodotto, e inserirvi una riga a posteriori ne falsificherebbe il verbale. R4 sta
+qui, dove nasce, con questa nota.
 
 **Sono letture dedicate sugli snapshot del modulo, non proiezioni materializzate.**
 La persistenza è state-based: una proiezione separata aggiungerebbe una consistenza eventuale
@@ -373,6 +381,33 @@ funzione costa una riga. Quella riga sarebbe la foreign key fra moduli che `doma
 rifiutato — scritta in TypeScript invece che in SQL, ma con lo stesso effetto: due contesti che
 non possono più cambiare separatamente.
 
+### R4 — Le sessioni, viste dal responsabile
+
+```ts
+listaSessioni(corsoId?: string): SessioneDelCorsoDTO[] {
+  return archivio.sessioni.valori()
+    .filter(s => corsoId === undefined || s.corsoId === corsoId)
+    .map(datiPerIlResponsabile)   // iscritti e inAttesa, mai postiResidui
+    .sort(perDataEOraDiscendente);
+}
+```
+
+**Il filtro è opzionale, e non è una comodità: è ciò che rende R3 componibile con una sola
+chiamata.** Senza `corsoId` la vista catalogo legge tutte le sessioni una volta e le conta per
+corso; con `corsoId` è l'elenco della vista «programmazione sessioni». L'alternativa —
+`courseId` obbligatorio — avrebbe costretto la vista catalogo a una richiesta per riga
+dell'elenco, cioè a trasformare in N+1 la seconda delle «due letture separate» di R3.
+
+**Non ha `postiResidui`, e non è una dimenticanza di simmetria con R1.** Il responsabile vede
+quanti sono iscritti; è il dipendente a vedere quanti posti restano. È la stessa ragione per cui
+§4.11 vieta un `CardSessione` condiviso fra le due app: due attori guardano due cose, e un tipo
+solo per entrambi avrebbe metà dei campi sempre inutili.
+
+**Nessun filtro sul tempo né sullo stato**, quindi nessun `Orologio` fra i parametri: è la vista
+di gestione, e le sessioni passate e annullate ci devono essere — su quelle si ragiona, e il
+motivo dell'annullamento è parte di ciò che il responsabile deve leggere. È l'unica delle quattro
+letture che non dipende dall'istante corrente.
+
 ---
 
 ## 4.6 Rotte e DTO
@@ -390,6 +425,7 @@ Dominio in italiano, rotte e DTO in inglese, traduzione **solo nei controller**.
 | `POST` | `/api/sessions` | `web-formazione` | `ProgrammaSessione` |
 | `PATCH` | `/api/sessions/:id/capacity` | `web-formazione` | `ModificaCapienzaSessione` |
 | `POST` | `/api/sessions/:id/cancel` | `web-formazione` | `AnnullaSessione` |
+| `GET` | `/api/sessions?courseId=` | `web-formazione` | R4 |
 | `GET` | `/api/sessions/open` | `web-dipendente` | R1 |
 | `POST` | `/api/sessions/:id/enrollments` | `web-dipendente` | `Iscriviti` |
 | `DELETE` | `/api/sessions/:id/enrollments/me` | `web-dipendente` | `AnnullaIscrizione` |
@@ -397,6 +433,16 @@ Dominio in italiano, rotte e DTO in inglese, traduzione **solo nei controller**.
 
 La colonna di destra è **indicativa e non applicata**: non esiste autorizzazione, e nulla
 impedisce a un'app di chiamare le rotte dell'altra. Serve a leggere la tabella, non a proteggerla.
+
+`courseId` è **l'unico parametro di query dichiarato in tutto il sistema**, ed è validato da un
+DTO come i corpi: con `forbidNonWhitelisted`, un `?stato=aperta` inventato dal client riceve un
+rifiuto esplicito invece di essere ignorato in silenzio. Vale la stessa frase di §4.2 —
+scartare un campo non dichiarato senza dirlo è peggio che rifiutarlo — applicata all'URL.
+
+`/api/sessions/open` è un **sottopercorso letterale e non un filtro**: «aperta» non è uno stato
+della sessione, è la congiunzione di due condizioni — programmata e non ancora iniziata — che il
+client non deve poter comporre a modo suo. Per questo R1 e R4 sono due rotte e non una con due
+parametri.
 
 Nessun prefisso di ruolo — niente `/api/admin/...`. Le rotte restano organizzate per risorsa: un
 prefisso che nomina chi chiama codifica nell'URL un'informazione che non riguarda la risorsa, e
@@ -832,8 +878,8 @@ definizione. Il docente non compare: è un value object, non formula comandi (`d
 |---|---|---|
 | Sessioni aperte, con posti residui | `web-dipendente` | `GET /api/sessions/open`, `POST …/enrollments` |
 | Le mie iscrizioni, con annullamento | `web-dipendente` | `GET /api/enrollments/me`, `DELETE …/enrollments/me` |
-| Gestione catalogo corsi | `web-formazione` | `GET/POST/PATCH /api/courses`, `publish`, `withdraw` |
-| Programmazione e annullamento sessioni | `web-formazione` | `POST /api/sessions`, `cancel`, `capacity` |
+| Gestione catalogo corsi | `web-formazione` | `GET /api/courses` (R3) **+** `GET /api/sessions` (R4, per il conteggio), `POST/PATCH /api/courses`, `publish`, `withdraw` |
+| Programmazione e annullamento sessioni | `web-formazione` | `GET /api/sessions?courseId=` (R4), `POST /api/sessions`, `cancel`, `capacity` |
 | Selettore utente | entrambe, da `packages/dev-identity` | Imposta l'header `X-Utente` |
 
 ### Perché due app, e non una con due sezioni
@@ -856,7 +902,13 @@ packages/
 └── dev-identity/    selettore utente, imposta X-Utente
 ```
 
-`contracts` è il punto in cui la traduzione italiano → inglese è **già avvenuta**: il frontend
+Di questi esistono `contracts`, `api-client` e `ui`; `dev-identity` è ancora da scrivere, e
+finché non c'è l'header `X-Utente` lo imposta chi costruisce il client — `createApi({ currentUser })`.
+
+`contracts` è **solo tipi**: nessuna funzione, nessuna costante, quindi il pacchetto non esiste a
+runtime, e i DTO `class-validator` dell'api ne fanno `implements`. La forma sta in un posto solo,
+e una divergenza fra i due lati è un errore di compilazione invece di un difetto che si scopre
+nel browser. È il punto in cui la traduzione italiano → inglese è **già avvenuta**: il frontend
 vede `Session`, mai `Sessione`. Vale una regola `no-restricted-imports` che vieti alle app di
 importare da `apps/api/src/*/domain`, nella stessa forma dei guardiani di §4.9 — senza, il primo
 `import type { Sessione }` scritto per comodità promuove l'aggregato a contratto pubblico.
@@ -873,6 +925,49 @@ Il bottone «Iscriviti» in particolare **non va mai in `ui`**: deve restare abi
 zero posti residui, e in un componente condiviso qualcuno prima o poi aggiungerà
 `disabled={postiResidui === 0}` per gentilezza — facendo decidere al frontend quale dei due
 esiti si verifica.
+
+### Com'è fatta ciascuna app
+
+Le cartelle di primo livello sotto `src/` sono i **bounded context**, non i tipi tecnici:
+
+```
+web-formazione/src/                    web-dipendente/src/
+├── app/                               ├── app/
+│   ├── api.ts      createApi          │   └── (gli stessi quattro)
+│   ├── errori.ts   HttpError → frase  │
+│   ├── formato.ts  date, ore, luoghi  │
+│   └── lettura.ts  useLettura         │
+├── catalogo/                          └── iscrizioni/
+│   ├── pagine/                            ├── pagine/
+│   └── componenti/                        └── componenti/
+└── iscrizioni/
+    ├── pagine/
+    └── componenti/
+```
+
+**L'asimmetria è il punto.** `web-formazione` ha due cartelle di contesto, `web-dipendente`
+una: è la stessa cosa che dice la tabella qui sopra, ma scritta dove non si può ignorare. Con
+cartelle per tipo — `pages/`, `components/`, `hooks/` — sparirebbe, e la vista catalogo, che è
+il punto in cui i due contesti si toccano componendo R3, sembrerebbe una schermata come le
+altre.
+
+**Non si imita la struttura dell'api.** Niente `domain/`, `application/`, `infrastructure/`
+sotto `src/`: il frontend consuma DTO e non ha oggetti di dominio, quindi quelle cartelle
+sarebbero un guscio vuoto che ne riprende la forma senza averne le ragioni — e nel documento
+che ha appena vietato di serializzare un aggregato, sarebbero un invito a riempirle.
+
+In `app/` va ciò che **non appartiene a nessun contesto**: il client, la traduzione degli
+errori, la formattazione, lo stato di una lettura. È il posto dove finisce l'infrastruttura
+dell'app, e per come è fatto questo sistema è poca roba.
+
+`app/errori.ts` e `app/formato.ts` sono **copie**, non un pacchetto condiviso: gli errori che
+il dipendente può provocare sono altri da quelli del responsabile. Vale la regola della sezione
+precedente — si duplica, e si condivide quando le due copie sono rimaste identiche abbastanza a
+lungo. Queste due non lo sono mai state.
+
+Il nome delle cartelle è **in italiano**, come i contesti: `catalogo/`, `iscrizioni/`. Rotte e
+DTO restano inglesi, e il confine fra le due lingue è dove §4.6 lo ha messo — nel controller,
+e in `contracts` per chi legge da questo lato.
 
 ### Le regole valide per entrambe
 
@@ -938,18 +1033,29 @@ Lo stato al termine dei quattro documenti.
 
 - [x] I quattro documenti esistono, e ogni hotspot dichiarato è chiuso con una decisione motivata
 - [ ] Il backend implementa entrambi i contesti, event bus in-process, read model, notifiche via log
-      → **fatti** i due contesti e il bus; **mancano** read model (§4.5) e `notifiche` (P3, P4)
+      → **fatti** i due contesti, il bus e il read model con le sue quattro letture (§4.5);
+      **manca** `notifiche` (P3, P4)
 - [x] Il repository in memoria conserva snapshot, mai riferimenti: mutare un aggregato non salvato non cambia l'archivio
 - [ ] Le due app frontend consumano solo `packages/contracts`, mai i tipi di dominio
+      → **vero, ma non ancora protetto**: le viste esistono e importano solo da `contracts`,
+      `api-client` e `ui`, senza una riga che risalga a `apps/api`. La casella resta aperta
+      perché il guardiano `no-restricted-imports` non è stato scritto, e questo documento
+      chiedeva di scriverlo *prima* della prima vista: la prescrizione è stata mancata, e il
+      debito ora si paga in ritardo invece che in anticipo
 - [x] `pnpm lint` passa con zero warning, guardiani architetturali inclusi
 - [x] Cancellando `infrastructure/`, il dominio compila ancora
       → verificato compilando `src/**/domain/**` isolato, senza `application/` né `infrastructure/`
 - [x] I test di dominio girano in meno di un secondo e si leggono come le regole di `event-storming.md` §1.0
-- [ ] Le due app frontend coprono le quattro viste
+- [x] Le due app frontend coprono le quattro viste
+      → le quattro viste consumano le quattro letture e i nove comandi di §4.6. R3 è composto
+      nel frontend da due chiamate separate, «Iscriviti» resta abilitato a zero posti residui e
+      il cambio sessione è la sequenza guidata di HS-5. Manca il selettore utente
+      (`packages/dev-identity`): finché non c'è, `X-Utente` è fisso in `app/api.ts`
 
-Le tre caselle rimaste sono **due lavori dichiarati**, non difetti scoperti: il read model con le
-sue tre rotte `GET`, il contesto `notifiche`, e il frontend. Tutto ciò che i quattro documenti
-descrivono come già deciso è invece implementato e coperto da test.
+Le due caselle rimaste sono **lavori dichiarati**: il contesto `notifiche` e il guardiano sugli
+import delle app — quest'ultimo in ritardo su sé stesso, come dice la sua riga. Tutto ciò che i
+quattro documenti descrivono come già deciso è invece implementato e coperto da test — read
+model incluso, con le quattro rotte `GET` di §4.6.
 
 Il criterio che ha arbitrato ogni scelta di questi quattro documenti resta quello di partenza, e
 va riapplicato a ogni riga del codice che seguirà:

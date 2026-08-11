@@ -1,0 +1,18 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ],
+  /*
+   * Duplicato di quanto sta in `tsconfig.app.json`: questo file non compila nulla
+   * (`files: []`), ma è quello che leggono gli strumenti esterni — la CLI di shadcn fra
+   * gli altri — per scoprire gli alias.
+   */
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}

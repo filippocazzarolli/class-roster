@@ -6,8 +6,10 @@ sessioni a posti limitati e lista d'attesa.
 L'obiettivo non è il software funzionante. È il **percorso che porta dal dominio al codice** —
 e il fatto che ogni scelta lungo quel percorso sia scritta, motivata e rintracciabile.
 
-> ⚠️ **Stato: solo documentazione.** Non c'è ancora codice. La cartella [`doc/`](doc/) è, al
-> momento, l'intero progetto.
+> **Stato.** I quattro documenti sono chiusi, il backend li implementa — due contesti, event bus,
+> read model, 92 test — e il frontend esiste come impalcatura: due app React + Vite e i pacchetti
+> condivisi, senza ancora nessuna delle quattro viste. Mancano quelle e il contesto `notifiche`:
+> l'elenco puntuale è in [`doc/architecture.md`](doc/architecture.md) §4.12.
 
 ---
 
@@ -61,32 +63,33 @@ Se hai dieci minuti: `doc/README.md`, poi `event-storming.md` §1.0 e `aggregati
 
 ---
 
-## Come sarà fatto
+## Com'è fatto
 
 | Ambito | Scelta |
 |---|---|
 | Monorepo | Turborepo + pnpm |
 | Backend | NestJS — **un solo progetto**, moduli per bounded context |
-| Frontend | React, **due app**: una per attore |
+| Frontend | React 19 + Vite, **due app**: una per attore. Tailwind v4 e shadcn in `packages/ui` |
 | Persistenza | **In memoria**, state-based — nessun database, repository dietro porta |
 | Eventi fra contesti | Event bus in-process, handler asincroni e idempotenti |
 | Identità | Nessuna autenticazione: header `X-Utente`, letto in un solo punto |
 
 ```
 apps/
-├── api/                  iscrizioni · catalogo · notifiche · shared
-├── web-dipendente/       sessioni aperte, le mie iscrizioni
+├── api/                  iscrizioni · catalogo · shared        (notifiche: da scrivere)
+├── web-dipendente/       sessioni aperte, le mie iscrizioni    (viste: da scrivere)
 └── web-formazione/       catalogo corsi, programmazione sessioni
 packages/
-├── contracts/            DTO e tipi delle rotte — nessun tipo di dominio
-├── api-client/           fetch tipizzato
-├── ui/                   componenti ignoranti di dominio
-└── dev-identity/         selettore utente
+├── contracts/            i tipi delle rotte — solo tipi, nessun runtime, nessun dominio
+├── api-client/           le dodici rotte, una funzione per rotta
+├── ui/                   componenti ignoranti di dominio (Tailwind + shadcn)
+└── dev-identity/         selettore utente                      (da scrivere)
 ```
 
 Il numero di app frontend è **invisibile al backend**: i moduli dell'API sono i bounded
 context, mai gli attori. E `packages/contracts` è il punto in cui la traduzione è già avvenuta
-— il frontend vede `Session`, mai `Sessione`.
+— il frontend vede `Session`, mai `Sessione`. I DTO dell'API ne fanno `implements`: la forma dei
+corpi sta in un posto solo, e una divergenza fra i due lati non compila.
 
 **Non c'è database, ed è una scelta.** Lo stato vive in memoria e muore con il processo: si
 avvia con `pnpm dev` e nient'altro. Il dominio non se ne accorge — le porte dei repository
@@ -96,10 +99,10 @@ un'affermazione e non una dimostrazione.
 
 ---
 
-## Le regole che il codice dovrà rispettare
+## Le regole che il codice rispetta
 
-Poche, e imposte da guardiani automatici invece che dalla buona volontà — la configurazione sta
-in `doc/architecture.md` §4.9.
+Poche, e imposte da guardiani automatici invece che dalla buona volontà: vivono in
+`apps/api/eslint.config.mjs`, e `doc/architecture.md` §4.9 spiega perché sono quelle.
 
 - **Il dominio non conosce il framework.** Test brutale: cancellando `infrastructure/`, il
   dominio compila ancora.
@@ -107,7 +110,9 @@ in `doc/architecture.md` §4.9.
   dall'anticorruption layer.
 - **Nessuna foreign key fra moduli.** Il `corsoId` dentro `iscrizioni` è una copia, non un
   riferimento.
-- **Niente `new Date()`** nel dominio: il tempo entra da una porta.
+- **Niente `new Date()`** nel dominio: il tempo entra da una porta. Vale anche nel read model.
+- **Il read model non tocca gli aggregati.** Legge gli snapshot dell'archivio: se un giorno
+  importasse `Sessione`, la separazione fra letture e scritture sarebbe già persa.
 - **Il dominio è in italiano**, rotte e DTO in inglese, traduzione solo nei controller.
 
 ---

@@ -1,0 +1,8 @@
+/*
+ * Tema, token e primitive stanno in `packages/ui`: qui si importa e basta, così le due app
+ * non possono divergere nello stile. `@source` dichiara le sorgenti di *questa* app —
+ * quelle del pacchetto le dichiara il pacchetto.
+ */
+@import "@repo/ui/globals.css";
+
+@source "./**/*.{ts,tsx}";

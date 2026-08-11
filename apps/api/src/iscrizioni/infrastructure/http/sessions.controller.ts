@@ -2,11 +2,19 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   HttpCode,
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
+import type {
+  CourseSession,
+  CreatedResponse,
+  OpenSession,
+} from '@repo/contracts';
+import { Orologio } from '../../../shared/domain/orologio';
 import { Utente } from '../../../shared/http/utente-corrente';
 // `import type` perché il tipo compare in una firma decorata: con emitDecoratorMetadata
 // un import normale finirebbe nei metadati a runtime, e un'interfaccia lì non esiste.
@@ -16,10 +24,13 @@ import { AnnullaSessioneUseCase } from '../../application/annulla-sessione.use-c
 import { IscrivitiUseCase } from '../../application/iscriviti.use-case';
 import { ModificaCapienzaUseCase } from '../../application/modifica-capienza.use-case';
 import { ProgrammaSessioneUseCase } from '../../application/programma-sessione.use-case';
+import { LettureSessioni } from '../../read-model/letture-sessioni';
+import { aCourseSession, aOpenSession } from './read-dto';
 import {
   CancelSessionDto,
   ChangeCapacityDto,
   EnrollmentResultDto,
+  ListSessionsQueryDto,
   ScheduleSessionDto,
 } from './dto';
 
@@ -42,10 +53,48 @@ export class SessionsController {
     private readonly annullaSessione: AnnullaSessioneUseCase,
     private readonly iscriviti: IscrivitiUseCase,
     private readonly annullaIscrizione: AnnullaIscrizioneUseCase,
+    private readonly letture: LettureSessioni,
+    private readonly orologio: Orologio,
   ) {}
 
+  /**
+   * R1 — `architecture.md` §4.5.
+   *
+   * `open` è un sottopercorso letterale e non un filtro (`?state=open`): «aperta» non è
+   * uno stato della sessione, è la congiunzione di due condizioni — programmata e non
+   * ancora iniziata — che il client non deve poter comporre a modo suo.
+   *
+   * L'istante corrente arriva dalla porta `Orologio` e viene **passato** alla lettura: è
+   * il controller, che sta in infrastructure, a leggere il tempo. La lettura lo riceve, e
+   * per questo è deterministica nei test.
+   */
+  @Get('open')
+  sessioniAperte(): OpenSession[] {
+    return this.letture
+      .listaSessioniAperte(this.orologio.adesso())
+      .map(aOpenSession);
+  }
+
+  /**
+   * R4 — `architecture.md` §4.5.
+   *
+   * `courseId` è un **filtro opzionale**, e le due chiamate servono due viste di
+   * `web-formazione`: senza filtro compone R3 — la vista catalogo chiama una volta e conta
+   * per corso — con filtro è l'elenco della vista «programmazione sessioni».
+   *
+   * Dichiarata **dopo** `@Get('open')`: Nest confronta le rotte nell'ordine di
+   * registrazione, e `open` è un percorso letterale che deve essere riconosciuto prima che
+   * questa rotta più generica possa intercettarlo.
+   *
+   * Nessun `Orologio`: R4 non ha campi derivati dal tempo né filtri su di esso.
+   */
+  @Get()
+  sessioniDelCorso(@Query() query: ListSessionsQueryDto): CourseSession[] {
+    return this.letture.listaSessioni(query.courseId).map(aCourseSession);
+  }
+
   @Post()
-  programmaSessione(@Body() dto: ScheduleSessionDto): { id: string } {
+  programmaSessione(@Body() dto: ScheduleSessionDto): CreatedResponse {
     const { sessioneId } = this.programma.esegui({
       corsoId: dto.courseId,
       data: dto.date,

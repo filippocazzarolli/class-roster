@@ -72,19 +72,25 @@ iscrizioni/
 │   └── policy/
 │       └── annulla-sessioni-corso-ritirato.policy.ts   ← P2
 │
-└── infrastructure/
-    ├── http/
-    │   ├── sessions.controller.ts   ← 5 rotte, e la traduzione IT ↔ EN
-    │   ├── dto.ts                   ← i DTO in inglese
-    │   └── stati-http.iscrizioni.ts ← eccezione → stato
-    ├── persistence/
-    │   ├── sessione.snapshot.ts     ← lo stato piatto, senza comportamento
-    │   ├── sessione.mapper.ts       ← la traduzione, scritta a mano
-    │   └── repository-sessioni.in-memoria.ts
-    ├── acl/
-    │   └── replica-corsi-pubblicati.ts   ← la copia locale del catalogo
-    └── event-handlers/
-        └── corso-ritirato.handler.ts
+├── infrastructure/
+│   ├── http/
+│   │   ├── sessions.controller.ts   ← 5 comandi + R1, e la traduzione IT ↔ EN
+│   │   ├── enrollments.controller.ts ← R2: l'iscrizione come risorsa a sé
+│   │   ├── dto.ts                   ← i DTO in inglese
+│   │   ├── read-dto.ts              ← la traduzione IT → EN delle letture
+│   │   └── stati-http.iscrizioni.ts ← eccezione → stato
+│   ├── persistence/
+│   │   ├── sessione.snapshot.ts     ← lo stato piatto, senza comportamento
+│   │   ├── sessione.mapper.ts       ← la traduzione, scritta a mano
+│   │   └── repository-sessioni.in-memoria.ts
+│   ├── acl/
+│   │   └── replica-corsi-pubblicati.ts   ← la copia locale del catalogo
+│   └── event-handlers/
+│       └── corso-ritirato.handler.ts
+│
+└── read-model/
+    ├── letture-sessioni.ts          ← la porta, e i DTO che restituisce
+    └── letture-sessioni.in-memoria.ts   ← R1 e R2 sugli snapshot
 ```
 
 ---
@@ -445,8 +451,10 @@ salva(sessione: Sessione): void {
 ```
 
 La classe `SessioniInMemoria` è un **provider a sé** e non un campo privato del repository:
-serve perché il futuro read model possa leggere gli stessi snapshot senza passare da qui —
-le letture non hanno bisogno di aggregati.
+serve perché il read model legga gli stessi snapshot senza passare da qui — le letture non
+hanno bisogno di aggregati. È la dipendenza che `read-model/letture-sessioni.in-memoria.ts`
+riceve nel cablaggio, e l'unica che riceve: non avendo il repository, non ha modo di
+ricostruire un aggregato.
 
 `futureDelCorso` filtra sulle **stringhe** dello snapshot e ricostruisce solo ciò che
 sopravvive al filtro, invece di istanziare aggregati che verrebbero subito scartati. Non

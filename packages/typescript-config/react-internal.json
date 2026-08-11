@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./internal.json",
+  "compilerOptions": {
+    /* L'unica differenza rispetto a un pacchetto interno qualsiasi: qui c'è JSX. */
+    "jsx": "react-jsx"
+  }
+}

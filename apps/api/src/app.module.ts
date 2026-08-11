@@ -15,6 +15,8 @@ import {
   IndiceTitoliCorsi,
   RepositoryCorsiInMemoria,
 } from './catalogo/infrastructure/persistence/repository-corsi.in-memoria';
+import { LettureCorsi } from './catalogo/read-model/letture-corsi';
+import { LettureCorsiInMemoria } from './catalogo/read-model/letture-corsi.in-memoria';
 
 import { AnnullaIscrizioneUseCase } from './iscrizioni/application/annulla-iscrizione.use-case';
 import { AnnullaSessioneUseCase } from './iscrizioni/application/annulla-sessione.use-case';
@@ -26,12 +28,15 @@ import { CorsiPubblicati } from './iscrizioni/domain/ports/corsi-pubblicati';
 import { RepositorySessioni } from './iscrizioni/domain/ports/repository-sessioni';
 import { ReplicaCorsiPubblicati } from './iscrizioni/infrastructure/acl/replica-corsi-pubblicati';
 import { HandlerCorsoRitirato } from './iscrizioni/infrastructure/event-handlers/corso-ritirato.handler';
+import { EnrollmentsController } from './iscrizioni/infrastructure/http/enrollments.controller';
 import { SessionsController } from './iscrizioni/infrastructure/http/sessions.controller';
 import { STATI_HTTP_ISCRIZIONI } from './iscrizioni/infrastructure/http/stati-http.iscrizioni';
 import {
   RepositorySessioniInMemoria,
   SessioniInMemoria,
 } from './iscrizioni/infrastructure/persistence/repository-sessioni.in-memoria';
+import { LettureSessioni } from './iscrizioni/read-model/letture-sessioni';
+import { LettureSessioniInMemoria } from './iscrizioni/read-model/letture-sessioni.in-memoria';
 
 import { EventBusInProcess } from './shared/event-bus/event-bus-in-process';
 import { GeneratoreDiId } from './shared/domain/generatore-di-id';
@@ -54,11 +59,13 @@ import { OrologioDiSistema } from './shared/infrastructure/orologio-di-sistema';
  * riceve l'implementazione in memoria senza saperlo. Sostituirla con una su database
  * significherebbe cambiare una riga, in questo file.
  *
- * ⚠️ Le tre rotte di lettura di §4.6 (`GET /api/sessions/open`, `GET /api/enrollments/me`,
- * `GET /api/courses`) non sono ancora cablate: arrivano con il read model di §4.5.
+ * Le letture sono cablate **sulle collezioni, non sui repository**: `LettureSessioni`
+ * riceve `SessioniInMemoria` e `LettureCorsi` riceve `CorsiInMemoria`. È qui che la
+ * disciplina di §4.5 diventa una dipendenza dichiarata invece di una buona intenzione —
+ * il read model non ha modo di raggiungere un aggregato perché non gli è stato dato.
  */
 @Module({
-  controllers: [CoursesController, SessionsController],
+  controllers: [CoursesController, SessionsController, EnrollmentsController],
   providers: [
     // ─── Archivio ───────────────────────────────────────────────────────────
     SessioniInMemoria,
@@ -88,6 +95,19 @@ import { OrologioDiSistema } from './shared/infrastructure/orologio-di-sistema';
       useFactory: (corsi: CorsiInMemoria, indice: IndiceTitoliCorsi) =>
         new RepositoryCorsiInMemoria(corsi, indice),
       inject: [CorsiInMemoria, IndiceTitoliCorsi],
+    },
+
+    // ─── Read model: legge le collezioni, non i repository (§4.5) ───────────
+    {
+      provide: LettureSessioni,
+      useFactory: (sessioni: SessioniInMemoria) =>
+        new LettureSessioniInMemoria(sessioni),
+      inject: [SessioniInMemoria],
+    },
+    {
+      provide: LettureCorsi,
+      useFactory: (corsi: CorsiInMemoria) => new LettureCorsiInMemoria(corsi),
+      inject: [CorsiInMemoria],
     },
 
     // ─── ACL: la replica è insieme una porta del dominio e un handler del bus ─

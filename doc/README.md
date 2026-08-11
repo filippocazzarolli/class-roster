@@ -126,7 +126,7 @@ gusto. È il singolo risultato più utile dell'event storming — vedi `event-st
 | **INV-n** | Invariante: una regola sempre vera. Dodici in tutto | INV-4 «iscritti ≤ capienza» |
 | **HS-n** | Hotspot: un punto di decisione non ovvia. Quattordici, tutti chiusi | HS-4 «promozione transazionale» |
 | **Pn** | Policy: «ogni volta che accade X, allora Y» | P2 «il ritiro annulla le sessioni future» |
-| **Rn** | Read model: una lettura per l'interfaccia | R1 «sessioni aperte con posti residui» |
+| **Rn** | Read model: una lettura per l'interfaccia. Quattro, l'ultima dichiarata in `architecture.md` §4.5 | R1 «sessioni aperte con posti residui» |
 | **§x.y** | Sezione di un documento | `aggregation.md` §3.6 |
 
 Le sigle sono stabili fra i documenti: `INV-8` significa la stessa cosa ovunque compaia.
@@ -173,14 +173,20 @@ in `architecture.md` §4.9.
 
 ## Stato
 
+La versione dettagliata, con le annotazioni su cosa è verificato e come, sta in
+`architecture.md` §4.12.
+
 | | |
 |---|---|
 | ✅ | I quattro documenti esistono, e tutti e 14 gli hotspot sono chiusi con una decisione motivata |
-| ⬜ | Backend: un progetto NestJS, moduli per contesto, event bus in-process, read model, notifiche via log |
-| ⬜ | `pnpm lint` a zero warning, guardiani architetturali inclusi |
-| ⬜ | Cancellando `infrastructure/`, il dominio compila ancora |
-| ⬜ | Test di dominio sotto il secondo, leggibili come le regole di `event-storming.md` §1.0 |
-| ⬜ | Frontend: due app, quattro viste, pacchetti condivisi |
+| ✅ | Backend: un progetto NestJS, moduli per contesto, event bus in-process, read model con le quattro letture di §4.5 |
+| ⬜ | `notifiche`: composizione del messaggio e adapter di log (P3, P4) |
+| ✅ | `pnpm lint` a zero warning, guardiani architetturali inclusi |
+| ✅ | Cancellando `infrastructure/`, il dominio compila ancora |
+| ✅ | Test di dominio sotto il secondo, leggibili come le regole di `event-storming.md` §1.0 |
+| ✅ | Frontend: due app React + Vite e i pacchetti condivisi — `contracts`, `api-client`, `ui` |
+| ✅ | Frontend: le quattro viste, con `src/` diviso per bounded context (§4.11) |
+| ⬜ | Frontend: `dev-identity`, e il guardiano `no-restricted-imports` sugli import delle app |
 
 Il criterio che ha arbitrato ogni decisione di questi documenti, e che vale identico per ogni
 riga di codice che seguirà:
